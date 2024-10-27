@@ -6,3 +6,6 @@
 *.tar.bz2
 *.rar
 *.pkl
+*.md
+*.txt
+test.py

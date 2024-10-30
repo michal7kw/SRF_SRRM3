@@ -11,3 +11,5 @@
 test.py
 
 !Alternative_data_sources.md
+gencode.v26.GRCh38.genes.gtf
+GTEx_Analysis_2017-06-05_v8_RNASeQCv1.1.9_exon_reads.parquet

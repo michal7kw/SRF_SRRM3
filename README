@@ -1,12 +1,20 @@
-[Genome browser view of NM_001291831.2 vs NM_001110199.3](https://genome.ucsc.edu/cgi-bin/hgTracks?db=hg38&lastVirtModeType=default&lastVirtModeExtraState=&virtModeType=default&virtMode=0&nonVirtPosition=&position=chr7%3A76201896%2D76287287&hgsid=2369132133_GOBOb9rkAIsfjCaVFPbERIJ3E8en)
+# GTEx Analysis Project
 
-![alt text](image.png)
+## Genome Browser View
+[View NM_001291831.2 vs NM_001110199.3 comparison](https://genome.ucsc.edu/cgi-bin/hgTracks?db=hg38&lastVirtModeType=default&lastVirtModeExtraState=&virtModeType=default&virtMode=0&nonVirtPosition=&position=chr7%3A76201896%2D76287287&hgsid=2369132133_GOBOb9rkAIsfjCaVFPbERIJ3E8en)
 
+![Genome browser screenshot](image.png)
 
-To do:
+## To Do List
 
-- check the version of the original analysis GTEx database (ask: depretis.stefano@hsr.it)
-    - examine alternative GTEx datasets (! there is a new long read sequencing data https://gtexportal.org/home/downloads/adult-gtex/long_read_data)
-- use long read sequencing literature data (for now only human samples) to look direactly for the isoforms sequences (i.e. +/- exone 15)
-- Check for the exact sequence of the identified transcripts in the GTEx bulk tissue expression data
+### GTEx Database Analysis
+- [ ] Verify version of original GTEx database analysis
+  - Contact: depretis.stefano@hsr.it
+  - [ ] Review alternative GTEx datasets
+    - New long read sequencing data available at: https://gtexportal.org/home/downloads/adult-gtex/long_read_data
 
+### Isoform Analysis
+- [ ] Analyze long read sequencing literature data
+  - Focus on human samples
+  - Direct examination of isoform sequences (±exon 15)
+- [ ] Validate exact sequences of identified transcripts in GTEx bulk tissue expression data

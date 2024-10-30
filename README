@@ -1,0 +1,12 @@
+[Genome browser view of NM_001291831.2 vs NM_001110199.3](https://genome.ucsc.edu/cgi-bin/hgTracks?db=hg38&lastVirtModeType=default&lastVirtModeExtraState=&virtModeType=default&virtMode=0&nonVirtPosition=&position=chr7%3A76201896%2D76287287&hgsid=2369132133_GOBOb9rkAIsfjCaVFPbERIJ3E8en)
+
+![alt text](image.png)
+
+
+To do:
+
+- check the version of the original analysis GTEx database (ask: depretis.stefano@hsr.it)
+    - examine alternative GTEx datasets (! there is a new long read sequencing data https://gtexportal.org/home/downloads/adult-gtex/long_read_data)
+- use long read sequencing literature data (for now only human samples) to look direactly for the isoforms sequences (i.e. +/- exone 15)
+- Check for the exact sequence of the identified transcripts in the GTEx bulk tissue expression data
+

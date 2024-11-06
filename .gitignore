@@ -8,6 +8,10 @@
 *.pkl
 *.md
 *.txt
+*.h5ad
+*.json
+*.csv
+
 test.py
 
 !Alternative_data_sources.md

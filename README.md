@@ -6,15 +6,3 @@
 ![Genome browser screenshot](https://github.com/michal7kw/SRF_SRRM3/blob/main/image.png)
 
 ## To Do List
-
-### GTEx Database Analysis
-- [ ] Verify version of original GTEx database analysis
-  - Contact: depretis.stefano@hsr.it
-  - [ ] Review alternative GTEx datasets
-    - New long read sequencing data available at: https://gtexportal.org/home/downloads/adult-gtex/long_read_data
-
-### Isoform Analysis
-- [ ] Analyze long read sequencing literature data
-  - Focus on human samples
-  - Direct examination of isoform sequences (±exon 15)
-- [ ] Validate exact sequences of identified transcripts in GTEx bulk tissue expression data

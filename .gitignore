@@ -31,3 +31,7 @@ exp_*.ipynb
 tut_*.ipynb
 DATA/
 Archive/
+BrainAtlas/common
+BrainAtlas/human
+**/__pycache__
+**/__pycache__/**

@@ -1,5 +1,4 @@
 # Standard library imports
-import os
 import warnings
 from pathlib import Path
 from typing import List, Union, Tuple
@@ -19,96 +18,112 @@ from abc_atlas_access.abc_atlas_cache.abc_project_cache import AbcProjectCache
 
 from typing import List, Union, Tuple, Optional
 
-def load_multi_region_data(datasets: List[str], 
-                          genes: List[str],
-                          dataset_regions: Optional[List[str]] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+import os
+# Set the current working directory
+os.chdir('/beegfs/scratch/ric.broccoli/kubacki.michal/SRF_SRRM3')
+
+def load_multi_region_data(cell_metadata: pd.DataFrame,
+        abc_cache: AbcProjectCache,
+        datasets: List[str], 
+        genes: List[str],
+        dataset_regions: Optional[List[str]] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Load expression data for multiple datasets
     
     Args:
-        datasets: List of dataset names
+        cell_metadata: DataFrame containing cell metadata
+        abc_cache: AbcProjectCache instance for accessing data
+        datasets: List of dataset names (e.g., ['WMB-10X'])
         genes: List of gene names
-        dataset_regions: Optional list of specific regions to load. If None, loads all available regions.
-        
-    Returns:
-        expression_data: DataFrame with gene expression
-        meta_data: DataFrame with cell metadata
+        dataset_regions: Optional list of specific regions to load based on region_of_interest_acronym.
     """
     all_expression = []
     all_metadata = []
     
+    # Get all dataset versions from metadata
+    dataset_versions = cell_metadata['dataset_label'].unique()
+    
     for dataset in datasets:
-        # Get available regions for this dataset
-        if dataset_regions is None:
-            regions = [
-                reg.replace(f"{dataset}-", '') 
-                for reg in available_regions 
-                if reg.startswith(dataset)
-            ]
-        else:
-            regions = dataset_regions
+        # Get all versions for this dataset
+        versions = [v for v in dataset_versions if v.startswith(dataset)]
         
-        for region in regions:
-            print(f"Processing {dataset}-{region}")
+        for version in versions:
+            # Get feature matrices for this version
+            feature_matrices = cell_metadata[
+                cell_metadata['dataset_label'] == version
+            ]['feature_matrix_label'].unique()
             
-            # Load expression data
-            expr_file = f"{dataset}-{region}/log2"
-            try:
-                adata = anndata.read_h5ad(
-                    abc_cache.get_data_path(
-                        directory=dataset,
-                        file_name=expr_file
-                    ),
-                    backed='r'
-                )
-                
-                # Filter cells
-                valid_cells = cell_metadata[
-                    (cell_metadata['dataset_label'] == dataset) &
-                    (cell_metadata['feature_matrix_label'] == f"{dataset}-{region}")
+            for feature_matrix in feature_matrices:
+                # Get cells for this feature matrix
+                matrix_cells = cell_metadata[
+                    cell_metadata['feature_matrix_label'] == feature_matrix
                 ]
                 
-                # Get gene indices
-                gene_mask = [g in genes for g in adata.var['gene_symbol']]
-                if not any(gene_mask):
-                    print(f"No requested genes found in {dataset}-{region}")
-                    continue
+                # If specific regions requested, filter cells
+                if dataset_regions is not None:
+                    matrix_cells = matrix_cells[
+                        matrix_cells['region_of_interest_acronym'].isin(dataset_regions)
+                    ]
                     
-                # Get common cells
-                common_cells = list(set(adata.obs.index) & set(valid_cells.index))
-                if not common_cells:
-                    print(f"No matching cells found in {dataset}-{region}")
+                    if matrix_cells.empty:
+                        continue
+                
+                print(f"Processing {feature_matrix}")
+                
+                try:
+                    # Load expression data using the exact feature matrix label
+                    adata = anndata.read_h5ad(
+                        abc_cache.get_data_path(
+                            directory=version,  # Use version instead of dataset
+                            file_name=f"{feature_matrix}/log2"
+                        ),
+                        backed='r'
+                    )
+                    
+                    # Get gene indices
+                    gene_mask = [g in genes for g in adata.var['gene_symbol']]
+                    if not any(gene_mask):
+                        print(f"No requested genes found in {feature_matrix}")
+                        continue
+                        
+                    # Get common cells
+                    common_cells = list(set(adata.obs.index) & set(matrix_cells.index))
+                    if not common_cells:
+                        print(f"No matching cells found in {feature_matrix}")
+                        continue
+                    
+                    print(f"Found {len(common_cells)} cells in {feature_matrix}")
+                    
+                    # Extract expression data
+                    gene_ids = adata.var_names[gene_mask]
+                    data = pd.DataFrame(
+                        adata[common_cells, gene_ids].X.toarray(),
+                        index=common_cells,
+                        columns=adata.var['gene_symbol'][gene_mask]
+                    )
+                    
+                    # Add region and dataset information
+                    meta = matrix_cells.loc[common_cells].copy()
+                    data['region'] = meta['region_of_interest_acronym']
+                    data['dataset'] = version
+                    
+                    all_expression.append(data)
+                    all_metadata.append(meta)
+                    
+                    adata.file.close()
+                    del adata
+                    
+                except Exception as e:
+                    print(f"Error processing {feature_matrix}: {str(e)}")
                     continue
-                
-                print(f"Found {len(common_cells)} cells in {dataset}-{region}")
-                
-                # Extract expression data
-                gene_ids = adata.var_names[gene_mask]
-                data = pd.DataFrame(
-                    adata[common_cells, gene_ids].X.toarray(),
-                    index=common_cells,
-                    columns=adata.var['gene_symbol'][gene_mask]
-                )
-                
-                # Add region and dataset info
-                data['region'] = region
-                data['dataset'] = dataset
-                
-                # Get metadata
-                meta = valid_cells.loc[common_cells].copy()
-                
-                all_expression.append(data)
-                all_metadata.append(meta)
-                
-                adata.file.close()
-                del adata
-                
-            except Exception as e:
-                print(f"Error processing {dataset}-{region}: {str(e)}")
-                continue
     
     if not all_expression:
-        raise ValueError("No data could be loaded for any region")
+        error_msg = "No data could be loaded for any region. "
+        error_msg += "Please check that:\n"
+        error_msg += "1. The specified datasets and regions exist\n"
+        error_msg += "2. The requested genes are present in the data\n" 
+        error_msg += "3. There are matching cells in the metadata"
+        raise ValueError(error_msg)
         
     return pd.concat(all_expression), pd.concat(all_metadata)
 

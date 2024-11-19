@@ -6,7 +6,6 @@
 *.tar.bz2
 *.rar
 *.pkl
-*.md
 *.txt
 *.h5ad
 *.json

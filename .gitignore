@@ -9,7 +9,6 @@
 *.txt
 *.h5ad
 *.json
-*.csv
 *.err
 *.out
 *.rds

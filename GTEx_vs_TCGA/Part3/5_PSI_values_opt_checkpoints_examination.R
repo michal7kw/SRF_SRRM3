@@ -95,14 +95,7 @@ find_exon15_junctions <- function(jxn_coords) {
 }
 
 # Simplified RSE creation function
-create_rse_safe <- function(project_info) {
-  checkpoint_name <- paste0(project_info$project, "_rse")
-  rse_filtered <- load_checkpoint(checkpoint_name)
-  
-  if(!is.null(rse_filtered)) {
-    flog.info("Loaded RSE from checkpoint")
-    return(rse_filtered)
-  }
+create_rse_safe <- function(project_info) {  
   
   tryCatch({
     flog.info("Creating RSE for project: %s", project_info$project)
@@ -142,7 +135,6 @@ create_rse_safe <- function(project_info) {
     rm(rse)
     gc()
     
-    save_checkpoint(rse_filtered, checkpoint_name)
     return(rse_filtered)
   }, error = function(e) {
     flog.error("Error creating RSE: %s", e$message)
@@ -181,6 +173,20 @@ calculate_exon15_psi <- function(rse) {
       return(NA)
     }
   })
+
+  # psi_values <- sapply(seq_len(ncol(junction_counts)), function(i) {
+  #   # Separate upstream and downstream inclusion reads
+  #   upstream_reads <- sum(junction_counts[junctions$details$upstream, i])
+  #   downstream_reads <- sum(junction_counts[junctions$details$downstream, i])
+  #   exclusion_reads <- sum(junction_counts[junctions$exclusion, i])
+    
+  #   if(exclusion_reads >= 10) {  # Changed threshold condition
+  #       psi <- 100 * ((upstream_reads + downstream_reads)/2) / exclusion_reads
+  #       return(psi)
+  #   } else {
+  #       return(NA)
+  #   }
+  # })
   
   # Log summary statistics
   flog.info("PSI calculation complete:")

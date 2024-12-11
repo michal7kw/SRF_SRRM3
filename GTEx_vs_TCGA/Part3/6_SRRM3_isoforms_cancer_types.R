@@ -34,18 +34,16 @@ analyze_cancer_types <- function() {
   # Store results
   results_list <- list()
   
-  # Progress bar
-  pb <- progress_bar$new(
-    format = "Processing :project [:bar] :percent eta: :eta",
-    total = nrow(tcga_projects)
-  )
+  # Simple progress tracking
+  total_projects <- nrow(tcga_projects)
+  flog.info("Starting analysis of %d TCGA projects", total_projects)
   
   for(i in 1:nrow(tcga_projects)) {
     project_info <- tcga_projects[i,]
     project_name <- project_info$project
     cancer_type <- get_cancer_type(project_name)
     
-    pb$tick(tokens = list(project = project_name))
+    flog.info("Processing project %d/%d: %s", i, total_projects, project_name)
     
     # Create RSE object
     rse <- create_rse_safe(project_info)
@@ -68,6 +66,8 @@ analyze_cancer_types <- function() {
       psi = psi_values,
       stringsAsFactors = FALSE
     )
+    
+    flog.info("Completed processing %s", project_name)
   }
   
   # Combine all results

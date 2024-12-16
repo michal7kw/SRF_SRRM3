@@ -1,3 +1,9 @@
+### Output #################################
+# "PSI_values_full_names_cancer_types_violin.pdf"
+# "PSI_values_full_names_cancer_types_means.pdf"
+# "PSI_values_full_names_cancer_types_summary.csv"
+###########################################
+
 # Load required libraries
 library(recount3)
 library(GenomicRanges)
@@ -12,8 +18,29 @@ library(R.utils)
 library(viridis)
 
 # Set up logging
-flog.appender(appender.file("srrm3_tcga_analysis.log"))
+flog.appender(appender.file("./logs/PSI_values_full_names_TCGA.log"))
 flog.threshold(DEBUG)
+
+# Define cache directory
+CACHE_DIR <- "../cache"
+if (!dir.exists(CACHE_DIR)) {
+  dir.create(CACHE_DIR)
+}
+
+# Function to get cached data
+get_cached_data <- function(cache_file) {
+  if (file.exists(cache_file)) {
+    flog.info("Loading cached data from %s", cache_file)
+    return(readRDS(cache_file))
+  }
+  return(NULL)
+}
+
+# Function to save cached data
+save_cached_data <- function(data, cache_file) {
+  flog.info("Saving data to cache: %s", cache_file)
+  saveRDS(data, cache_file)
+}
 
 # Define SRRM3 information (keep the same as in GTEx script)
 SRRM3_INFO <- list(
@@ -94,8 +121,16 @@ find_exon15_junctions <- function(jxn_coords) {
   ))
 }
 
-# Simplified RSE creation function
+# Modified create_rse_safe function with caching
 create_rse_safe <- function(project_info) {  
+  # Create cache filename based on project info
+  cache_file <- file.path(CACHE_DIR, paste0("rse_", project_info$project, ".rds"))
+  
+  # Check cache first
+  cached_data <- get_cached_data(cache_file)
+  if (!is.null(cached_data)) {
+    return(cached_data)
+  }
   
   tryCatch({
     flog.info("Creating RSE for project: %s", project_info$project)
@@ -104,7 +139,7 @@ create_rse_safe <- function(project_info) {
     region <- GRanges(
       seqnames = SRRM3_INFO$gene$chr,
       ranges = IRanges(
-        start = SRRM3_INFO$exon15$start - 5000,  # Include surrounding region
+        start = SRRM3_INFO$exon15$start - 5000,
         end = SRRM3_INFO$exon15$end + 5000
       )
     )
@@ -135,6 +170,9 @@ create_rse_safe <- function(project_info) {
     rm(rse)
     gc()
     
+    # Cache the filtered RSE object
+    save_cached_data(rse_filtered, cache_file)
+    
     return(rse_filtered)
   }, error = function(e) {
     flog.error("Error creating RSE: %s", e$message)
@@ -142,9 +180,22 @@ create_rse_safe <- function(project_info) {
   })
 }
 
-# Calculate PSI for exon 15
+# Modified calculate_exon15_psi function with caching
 calculate_exon15_psi <- function(rse) {
   if(is.null(rse)) return(NULL)
+  
+  # Create cache filename based on RSE object characteristics
+  cache_key <- digest::digest(list(
+    coords = as.data.frame(rowRanges(rse)),
+    counts = assay(rse)
+  ))
+  cache_file <- file.path(CACHE_DIR, paste0("psi_", cache_key, ".rds"))
+  
+  # Check cache first
+  cached_data <- get_cached_data(cache_file)
+  if (!is.null(cached_data)) {
+    return(cached_data)
+  }
   
   # Get junction counts
   junction_counts <- assay(rse)
@@ -161,7 +212,6 @@ calculate_exon15_psi <- function(rse) {
   
   # Calculate PSI for each sample
   psi_values <- sapply(seq_len(ncol(junction_counts)), function(i) {
-    # Get read counts
     inclusion_reads <- sum(junction_counts[junctions$inclusion, i])
     exclusion_reads <- sum(junction_counts[junctions$exclusion, i])
     total_reads <- inclusion_reads + exclusion_reads
@@ -173,20 +223,18 @@ calculate_exon15_psi <- function(rse) {
       return(NA)
     }
   })
-
-  # psi_values <- sapply(seq_len(ncol(junction_counts)), function(i) {
-  #   # Separate upstream and downstream inclusion reads
-  #   upstream_reads <- sum(junction_counts[junctions$details$upstream, i])
-  #   downstream_reads <- sum(junction_counts[junctions$details$downstream, i])
-  #   exclusion_reads <- sum(junction_counts[junctions$exclusion, i])
-    
-  #   if(exclusion_reads >= 10) {  # Changed threshold condition
-  #       psi <- 100 * ((upstream_reads + downstream_reads)/2) / exclusion_reads
-  #       return(psi)
-  #   } else {
-  #       return(NA)
-  #   }
-  # })
+  
+  # Create results object
+  results <- list(
+    psi = psi_values,
+    junctions = list(
+      inclusion = rownames(junction_counts)[junctions$inclusion],
+      exclusion = rownames(junction_counts)[junctions$exclusion]
+    )
+  )
+  
+  # Cache results
+  save_cached_data(results, cache_file)
   
   # Log summary statistics
   flog.info("PSI calculation complete:")
@@ -194,17 +242,21 @@ calculate_exon15_psi <- function(rse) {
   flog.info("Non-NA samples: %d", sum(!is.na(psi_values)))
   flog.info("Mean PSI: %.2f", mean(psi_values, na.rm = TRUE))
   
-  return(list(
-    psi = psi_values,
-    junctions = list(
-      inclusion = rownames(junction_counts)[junctions$inclusion],
-      exclusion = rownames(junction_counts)[junctions$exclusion]
-    )
-  ))
+  return(results)
 }
 
-# New function to process TCGA metadata
+# Modified process_tcga_metadata function with caching
 process_tcga_metadata <- function(rse) {
+  # Create cache filename based on metadata characteristics
+  cache_key <- digest::digest(colData(rse))
+  cache_file <- file.path(CACHE_DIR, paste0("metadata_", cache_key, ".rds"))
+  
+  # Check cache first
+  cached_data <- get_cached_data(cache_file)
+  if (!is.null(cached_data)) {
+    return(cached_data)
+  }
+  
   # Extract metadata
   metadata <- colData(rse) %>% 
     as.data.frame()
@@ -212,69 +264,95 @@ process_tcga_metadata <- function(rse) {
   # Extract cancer type from TCGA metadata
   metadata$cancer_type <- metadata$tcga.cgc_case_histological_diagnosis
   
-  # Clean up cancer type names if needed
+  # Clean up cancer type names
   metadata$cancer_type <- gsub("_", " ", metadata$cancer_type)
   
-  # Log unique cancer types found
+  # Log unique cancer types
   unique_types <- unique(metadata$cancer_type)
   flog.info("Found %d unique cancer types:", length(unique_types))
   for(type in unique_types) {
     flog.info("  - %s", type)
   }
   
+  # Cache metadata
+  save_cached_data(metadata, cache_file)
+  
   return(metadata)
 }
 
-# Get available TCGA projects
-projects <- available_projects()
-tcga_projects <- subset(projects, file_source == "tcga")
-
-# Initialize lists to store results
-all_psi_data <- list()
-all_metadata <- list()
-
-# Process each TCGA project
-for(i in 1:nrow(tcga_projects)) {
-  project_name <- tcga_projects$project[i]
-  
-  flog.info("Processing TCGA project: %s", project_name)
-  
-  # Create RSE object
-  rse <- create_rse_safe(tcga_projects[i,])
-  
-  if(is.null(rse)) {
-    flog.error("Failed to create RSE for project %s", project_name)
-    next
+# Main analysis with caching
+main_analysis <- function() {
+  # Check for cached final results
+  final_cache_file <- file.path(CACHE_DIR, "final_psi_analysis_full_names_TCGA.rds")
+  cached_results <- get_cached_data(final_cache_file)
+  if (!is.null(cached_results)) {
+    return(cached_results)
   }
   
-  # Calculate PSI values
-  psi_result <- calculate_exon15_psi(rse)
+  # Get available TCGA projects
+  projects <- available_projects()
+  tcga_projects <- subset(projects, file_source == "tcga")
   
-  if(is.null(psi_result)) {
-    flog.error("Failed to calculate PSI values for project %s", project_name)
-    next
+  # Initialize lists to store results
+  all_psi_data <- list()
+  all_metadata <- list()
+  
+  # Process each TCGA project
+  for(i in 1:nrow(tcga_projects)) {
+    project_name <- tcga_projects$project[i]
+    flog.info("Processing TCGA project %d/%d: %s", i, nrow(tcga_projects), project_name)
+    
+    # Create RSE object
+    rse <- create_rse_safe(tcga_projects[i,])
+    
+    if(is.null(rse)) {
+      flog.error("Failed to create RSE for project %s", project_name)
+      next
+    }
+    
+    # Calculate PSI values
+    psi_result <- calculate_exon15_psi(rse)
+    
+    if(is.null(psi_result)) {
+      flog.error("Failed to calculate PSI values for project %s", project_name)
+      next
+    }
+    
+    # Process metadata
+    metadata <- process_tcga_metadata(rse)
+    
+    # Store results
+    all_psi_data[[project_name]] <- psi_result$psi
+    all_metadata[[project_name]] <- metadata
   }
   
-  # Process metadata
-  metadata <- process_tcga_metadata(rse)
+  # Combine all data
+  final_results <- list(
+    psi_data = all_psi_data,
+    metadata = all_metadata
+  )
   
-  # Store results
-  all_psi_data[[project_name]] <- psi_result$psi
-  all_metadata[[project_name]] <- metadata
+  # Cache final results
+  save_cached_data(final_results, final_cache_file)
+  
+  return(final_results)
 }
 
-# Combine all data
+# Run analysis and create plots
+results <- main_analysis()
+
+# Create plot data
 plot_data <- data.frame(
-  sample_id = unlist(lapply(names(all_psi_data), function(proj) {
-    paste0(proj, "_", seq_along(all_psi_data[[proj]]))
+  sample_id = unlist(lapply(names(results$psi_data), function(proj) {
+    paste0(proj, "_", seq_along(results$psi_data[[proj]]))
   })),
-  PSI = unlist(all_psi_data),
-  cancer_type = unlist(lapply(names(all_metadata), function(proj) {
-    all_metadata[[proj]]$cancer_type
+  PSI = unlist(results$psi_data),
+  cancer_type = unlist(lapply(names(results$metadata), function(proj) {
+    results$metadata[[proj]]$cancer_type
   }))
 ) %>%
-  filter(!is.na(PSI)) %>%  # Remove NA values
-  filter(cancer_type != "") # Remove empty cancer types
+  filter(!is.na(PSI)) %>%
+  filter(cancer_type != "")
 
 # Calculate summary statistics
 summary_stats <- plot_data %>%
@@ -287,7 +365,7 @@ summary_stats <- plot_data %>%
     .groups = 'drop'
   )
 
-# Create violin plot
+# Create and save plots
 p1 <- ggplot(plot_data, aes(x = reorder(cancer_type, PSI, FUN = median), 
                            y = PSI, 
                            fill = cancer_type)) +
@@ -305,7 +383,6 @@ p1 <- ggplot(plot_data, aes(x = reorder(cancer_type, PSI, FUN = median),
     plot.title = element_text(size = 12)
   )
 
-# Create scatter plot with means and error bars
 p2 <- ggplot(summary_stats, 
              aes(x = reorder(cancer_type, mean_PSI), 
                  y = mean_PSI, 
@@ -326,52 +403,11 @@ p2 <- ggplot(summary_stats,
     plot.title = element_text(size = 12)
   )
 
-# Try to save plots
+# Save plots and results
 tryCatch({
-  ggsave("SRRM3_exon15_PSI_cancer_types_violin.pdf", p1, width = 15, height = 8)
-  ggsave("SRRM3_exon15_PSI_cancer_types_means.pdf", p2, width = 15, height = 8)
+  ggsave("./output/PSI_values_full_names_cancer_types_violin.pdf", p1, width = 15, height = 8)
+  ggsave("./output/PSI_values_full_names_cancer_types_means.pdf", p2, width = 15, height = 8)
+  write.csv(summary_stats, "./output/PSI_values_full_names_cancer_types_summary.csv", row.names = FALSE)
 }, error = function(e) {
-  flog.error("Error saving plots: %s", e$message)
+  flog.error("Error saving outputs: %s", e$message)
 })
-
-# # Perform statistical test (Kruskal-Wallis)
-# kw_test <- tryCatch({
-#   kruskal.test(PSI ~ cancer_type, data = plot_data)
-# }, error = function(e) {
-#   flog.error("Error in Kruskal-Wallis test: %s", e$message)
-#   return(NULL)
-# })
-
-# # If Kruskal-Wallis is significant, perform pairwise Wilcoxon tests
-# if(!is.null(kw_test) && kw_test$p.value < 0.05) {
-#   pairwise_tests <- tryCatch({
-#     pairwise.wilcox.test(
-#       plot_data$PSI,
-#       plot_data$cancer_type,
-#       p.adjust.method = "BH"
-#     )
-#   }, error = function(e) {
-#     flog.error("Error in pairwise Wilcoxon tests: %s", e$message)
-#     return(NULL)
-#   })
-# }
-
-# Try to save summary statistics
-tryCatch({
-  write.csv(summary_stats, "SRRM3_exon15_cancer_types_summary.csv", row.names = FALSE)
-}, error = function(e) {
-  flog.error("Error saving summary statistics: %s", e$message)
-})
-
-# # Print results
-# flog.info("Summary statistics by cancer type:")
-# print(summary_stats)
-# 
-# if(!is.null(kw_test)) {
-#   flog.info("Kruskal-Wallis test p-value: %f", kw_test$p.value)
-#   
-#   if(exists("pairwise_tests") && !is.null(pairwise_tests)) {
-#     flog.info("Significant differences between cancer types detected")
-#     print(pairwise_tests)
-#   }
-# } 

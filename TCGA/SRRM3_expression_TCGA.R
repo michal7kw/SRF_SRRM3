@@ -1,3 +1,10 @@
+### Output #################################
+# "SRRM3_expression_TCGA.pdf"
+# "SRRM3_expression_TCGA.png"
+# "SRRM3_expression_TCGA.csv"
+# "SRRM3_expression_TCGA.rds"
+###########################################
+
 # Analysis of total SRRM3 expression across cancer types
 library(recount3)
 library(GenomicRanges)
@@ -10,11 +17,11 @@ library(viridis)
 library(scales)
 
 # Set up logging
-flog.appender(appender.file("srrm3_total_expression_analysis.log"))
+flog.appender(appender.file("./logs/SRRM3_expression_TCGA.log"))
 flog.threshold(DEBUG)
 
 # Define cache directory
-CACHE_DIR <- "cache"
+CACHE_DIR <- "../cache"
 if (!dir.exists(CACHE_DIR)) {
   dir.create(CACHE_DIR)
 }
@@ -95,7 +102,7 @@ create_rse_gene <- function(project_info) {
 # Main function to analyze cancer types
 analyze_cancer_types <- function() {
   # Check for cached results
-  cache_file <- file.path(CACHE_DIR, "srrm3_expression_results.rds")
+  cache_file <- file.path(CACHE_DIR, "SRRM3_expression_TCGA.rds")
   cached_results <- get_cached_data(cache_file)
   
   if (!is.null(cached_results)) {
@@ -130,7 +137,7 @@ analyze_cancer_types <- function() {
     cancer_type <- get_cancer_type(project_name)
     
     # Check for cached project data
-    project_cache_file <- file.path(CACHE_DIR, paste0("srrm3_", project_name, ".rds"))
+    project_cache_file <- file.path(CACHE_DIR, paste0("SRRM3_TCGA_", project_name, ".rds"))
     project_data <- get_cached_data(project_cache_file)
     
     if (!is.null(project_data)) {
@@ -241,8 +248,8 @@ plot_cancer_distributions <- function(results) {
     )
   
   # Save plot in high resolution
-  ggsave("SRRM3_expression_cancer_types.pdf", p1, width = 15, height = 10, dpi = 300)
-  ggsave("SRRM3_expression_cancer_types.png", p1, width = 15, height = 10, dpi = 300)
+  ggsave("./output/SRRM3_expression_TCGA.pdf", p1, width = 15, height = 10, dpi = 300)
+  ggsave("./output/SRRM3_expression_TCGA.png", p1, width = 15, height = 10, dpi = 300)
   
   return(p1)
 }
@@ -254,5 +261,5 @@ if(!is.null(results)) {
   print(plot)
   
   # Save results
-  write.csv(results, "SRRM3_expression_results.csv", row.names = FALSE)
+  write.csv(results, "./output/SRRM3_expression_TCGA.csv", row.names = FALSE)
 }

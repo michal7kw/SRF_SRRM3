@@ -1,3 +1,9 @@
+### Output #################################
+# "PSI_values_dataset_ids_TCGA_violin.pdf"
+# "PSI_values_dataset_ids_TCGA_summary.pdf"
+# "PSI_values_dataset_ids_TCGA_cancer_types.csv"
+###########################################
+
 # Analysis of SRRM3 isoform expression across cancer types
 library(recount3)
 library(GenomicRanges)
@@ -7,10 +13,32 @@ library(ggplot2)
 library(SummarizedExperiment)
 library(futile.logger)
 library(viridis)
+library(digest)
 
 # Set up logging
-flog.appender(appender.file("srrm3_cancer_analysis.log"))
+flog.appender(appender.file("./logs/PSI_values_dataset_ids_TCGA.log"))
 flog.threshold(DEBUG)
+
+# Define cache directory
+CACHE_DIR <- "../cache"
+if (!dir.exists(CACHE_DIR)) {
+  dir.create(CACHE_DIR)
+}
+
+# Function to get cached data
+get_cached_data <- function(cache_file) {
+  if (file.exists(cache_file)) {
+    flog.info("Loading cached data from %s", cache_file)
+    return(readRDS(cache_file))
+  }
+  return(NULL)
+}
+
+# Function to save cached data
+save_cached_data <- function(data, cache_file) {
+  flog.info("Saving data to cache: %s", cache_file)
+  saveRDS(data, cache_file)
+}
 
 # Define SRRM3 information
 SRRM3_INFO <- list(
@@ -61,14 +89,23 @@ find_exon15_junctions <- function(jxn_coords) {
   ))
 }
 
-# Simplified RSE creation function
+# Modified RSE creation function with caching
 create_rse_safe <- function(project_info) {  
+  # Create cache filename based on project info
+  cache_file <- file.path(CACHE_DIR, paste0("rse_dataset_ids_TCGA_", project_info$project, ".rds"))
+  
+  # Check cache first
+  cached_data <- get_cached_data(cache_file)
+  if (!is.null(cached_data)) {
+    return(cached_data)
+  }
+  
   tryCatch({
     # Create region around exon 15
     region <- GRanges(
       seqnames = SRRM3_INFO$gene$chr,
       ranges = IRanges(
-        start = SRRM3_INFO$exon15$start - 5000,  # Include surrounding region
+        start = SRRM3_INFO$exon15$start - 5000,
         end = SRRM3_INFO$exon15$end + 5000
       )
     )
@@ -95,6 +132,9 @@ create_rse_safe <- function(project_info) {
     rm(rse)
     gc()
     
+    # Cache the filtered RSE object
+    save_cached_data(rse_filtered, cache_file)
+    
     return(rse_filtered)
   }, error = function(e) {
     flog.error("Error creating RSE: %s", e$message)
@@ -102,9 +142,22 @@ create_rse_safe <- function(project_info) {
   })
 }
 
-# Calculate PSI for exon 15
+# Modified PSI calculation function with caching
 calculate_exon15_psi <- function(rse) {
   if(is.null(rse)) return(NULL)
+  
+  # Create cache filename based on RSE object characteristics
+  cache_key <- digest::digest(list(
+    coords = as.data.frame(rowRanges(rse)),
+    counts = assay(rse)
+  ))  
+  cache_file <- file.path(CACHE_DIR, paste0("psi_dataset_ids_TCGA_", cache_key, ".rds"))
+  
+  # Check cache first
+  cached_data <- get_cached_data(cache_file)
+  if (!is.null(cached_data)) {
+    return(cached_data)
+  }
   
   # Get junction counts
   junction_counts <- assay(rse)
@@ -132,13 +185,18 @@ calculate_exon15_psi <- function(rse) {
     }
   })
   
-  return(list(
+  results <- list(
     psi = psi_values,
     junctions = list(
       inclusion = rownames(junction_counts)[junctions$inclusion],
       exclusion = rownames(junction_counts)[junctions$exclusion]
     )
-  ))
+  )
+  
+  # Cache results
+  save_cached_data(results, cache_file)
+  
+  return(results)
 }
 
 # Function to get cancer type from TCGA project name
@@ -146,8 +204,15 @@ get_cancer_type <- function(project) {
   gsub("TCGA-", "", project)
 }
 
-# Function to analyze SRRM3 isoforms across cancer types
+# Modified main analysis function with caching
 analyze_cancer_types <- function() {
+  # Check for cached final results
+  final_cache_file <- file.path(CACHE_DIR, "final_analysis_dataset_ids_TCGA.rds")
+  cached_results <- get_cached_data(final_cache_file)
+  if (!is.null(cached_results)) {
+    return(cached_results)
+  }
+  
   # Get available TCGA projects for human
   projects <- available_projects(organism = "human")
   
@@ -216,13 +281,8 @@ analyze_cancer_types <- function() {
   all_results <- do.call(rbind, results_list)
   all_results <- all_results[!is.na(all_results$psi), ]
   
-  if(nrow(all_results) == 0) {
-    flog.error("No valid results after removing NA values")
-    return(NULL)
-  }
-  
-  flog.info("Analysis complete: %d samples across %d cancer types", 
-            nrow(all_results), length(unique(all_results$cancer_type)))
+  # Cache final results
+  save_cached_data(all_results, final_cache_file)
   
   return(all_results)
 }
@@ -253,7 +313,7 @@ plot_cancer_distributions <- function(results) {
     ) +
     scale_fill_viridis(discrete = TRUE) +
     labs(
-      title = "SRRM3 Isoform Distribution Across Cancer Types",
+      title = "SRRM3 PSI values Distribution Across Cancer Types",
       subtitle = "Ratio of long (16 exons) to short (15 exons) isoform",
       x = "Cancer Type",
       y = "PSI Value"
@@ -271,7 +331,7 @@ plot_cancer_distributions <- function(results) {
       axis.text.x = element_text(angle = 45, hjust = 1)
     ) +
     labs(
-      title = "SRRM3 Isoform Distribution Summary by Cancer Type",
+      title = "SRRM3 PSI values Distribution Summary by Cancer Type",
       subtitle = "Median PSI values with standard deviation",
       x = "Cancer Type",
       y = "Median PSI Value",
@@ -282,18 +342,18 @@ plot_cancer_distributions <- function(results) {
 }
 
 # Main execution
-flog.info("Starting SRRM3 isoform analysis across cancer types")
+flog.info("Starting SRRM3 PSI values analysis across cancer types")
 
 results <- analyze_cancer_types()
 
 if(!is.null(results) && nrow(results) > 0) {
   # Save results
-  write.csv(results, "srrm3_isoforms_cancer_types.csv", row.names = FALSE)
+  write.csv(results, "./output/PSI_values_dataset_ids_TCGA_cancer_types.csv", row.names = FALSE)
   
   # Create and save plots
   plots <- plot_cancer_distributions(results)
-  ggsave("srrm3_isoforms_distribution.pdf", plots$distribution_plot, width = 12, height = 8)
-  ggsave("srrm3_isoforms_summary.pdf", plots$summary_plot, width = 12, height = 8)
+  ggsave("./output/PSI_values_dataset_ids_TCGA_violin.pdf", plots$distribution_plot, width = 12, height = 8)
+  ggsave("./output/PSI_values_dataset_ids_TCGA_summary.pdf", plots$summary_plot, width = 12, height = 8)
   
   flog.info("Analysis complete. Results and plots saved.")
 } else {

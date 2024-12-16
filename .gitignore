@@ -34,3 +34,6 @@ BrainAtlas/human
 **/__pycache__
 **/__pycache__/**
 GTEx_vs_TCGA/Part3/.Rhistory
+cache/
+.Rhistory
+**/log/

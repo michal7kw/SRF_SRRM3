@@ -1,3 +1,8 @@
+### Output #################################
+# "SRRM3_total_expression_GTEx_tissues.pdf"
+# "SRRM3_total_expression_GTEx_results.csv"
+###########################################
+
 # Analysis of total SRRM3 expression across GTEx tissues
 library(recount3)
 library(GenomicRanges)
@@ -10,11 +15,11 @@ library(viridis)
 library(scales)
 
 # Set up logging
-flog.appender(appender.file("srrm3_gtex_expression_analysis.log"))
+flog.appender(appender.file("./logs/SRRM3_total_expression_GTEx.log"))
 flog.threshold(DEBUG)
 
 # Define cache directory
-CACHE_DIR <- "cache"
+CACHE_DIR <- "../cache"
 if (!dir.exists(CACHE_DIR)) {
   dir.create(CACHE_DIR)
 }
@@ -123,7 +128,7 @@ create_rse_gene <- function(project_info) {
 # Main function to analyze GTEx tissues
 analyze_gtex_tissues <- function() {
   # Check for cached results
-  cache_file <- file.path(CACHE_DIR, "srrm3_gtex_expression_results.rds")
+  cache_file <- file.path(CACHE_DIR, "SRRM3_total_expression_GTEx_results.rds")
   cached_results <- get_cached_data(cache_file)
   
   if (!is.null(cached_results)) {
@@ -244,8 +249,8 @@ plot_tissue_distributions <- function(results) {
     )
   
   # Save plot in high resolution
-  ggsave("SRRM3_expression_GTEx_tissues.pdf", p1, width = 25, height = 10, dpi = 300)
-  ggsave("SRRM3_expression_GTEx_tissues.png", p1, width = 25, height = 10, dpi = 300)
+  ggsave("./output/SRRM3_total_expression_GTEx_tissues.pdf", p1, width = 25, height = 10, dpi = 300)
+  ggsave("./output/SRRM3_total_expression_GTEx_tissues.png", p1, width = 25, height = 10, dpi = 300)
   
   return(p1)
 }
@@ -257,5 +262,5 @@ if(!is.null(results)) {
   print(plot)
   
   # Save results
-  write.csv(results, "SRRM3_expression_GTEx_results.csv", row.names = FALSE)
+  write.csv(results, "./output/SRRM3_total_expression_GTEx_results.csv", row.names = FALSE)
 } 

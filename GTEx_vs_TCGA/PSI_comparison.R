@@ -10,10 +10,32 @@ library(progress)
 library(futile.logger)
 library(R.utils)
 library(viridis)
+library(digest)
 
 # Set up logging
-flog.appender(appender.file("srrm3_analysis.log"))
+flog.appender(appender.file("./logs/PSI_comparison.log"))
 flog.threshold(DEBUG)
+
+# Define cache directory
+CACHE_DIR <- "../cache"
+if (!dir.exists(CACHE_DIR)) {
+  dir.create(CACHE_DIR)
+}
+
+# Function to get cached data
+get_cached_data <- function(cache_file) {
+  if (file.exists(cache_file)) {
+    flog.info("Loading cached data from %s", cache_file)
+    return(readRDS(cache_file))
+  }
+  return(NULL)
+}
+
+# Function to save cached data
+save_cached_data <- function(data, cache_file) {
+  flog.info("Saving data to cache: %s", cache_file)
+  saveRDS(data, cache_file)
+}
 
 # Define SRRM3 information
 SRRM3_INFO <- list(
@@ -76,14 +98,6 @@ find_exon15_junctions <- function(jxn_coords) {
     }
   }
   
-  # Combine inclusion junctions
-  inclusion_jxns <- unique(c(upstream_jxns, downstream_jxns))
-  
-  flog.debug("Upstream junctions found: %d", length(upstream_jxns))
-  flog.debug("Downstream junctions found: %d", length(downstream_jxns))
-  flog.debug("Total inclusion junctions: %d", length(inclusion_jxns))
-  flog.debug("Exclusion junctions found: %d", length(exclusion_jxns))
-  
   return(list(
     inclusion = inclusion_jxns,
     exclusion = exclusion_jxns,
@@ -94,8 +108,18 @@ find_exon15_junctions <- function(jxn_coords) {
   ))
 }
 
-# Simplified RSE creation function
+# Modified RSE creation function with caching
 create_rse_safe <- function(project_info) {  
+  # Create cache filename based on project info
+  cache_file <- file.path(CACHE_DIR, paste0("rse_comparison_", 
+                                          project_info$project, "_",
+                                          project_info$file_source, ".rds"))
+  
+  # Check cache first
+  cached_data <- get_cached_data(cache_file)
+  if (!is.null(cached_data)) {
+    return(cached_data)
+  }
   
   tryCatch({
     flog.info("Creating RSE for project: %s", project_info$project)
@@ -135,6 +159,9 @@ create_rse_safe <- function(project_info) {
     rm(rse)
     gc()
     
+    # Cache the filtered RSE object
+    save_cached_data(rse_filtered, cache_file)
+    
     return(rse_filtered)
   }, error = function(e) {
     flog.error("Error creating RSE: %s", e$message)
@@ -142,9 +169,22 @@ create_rse_safe <- function(project_info) {
   })
 }
 
-# Calculate PSI for exon 15
+# Modified PSI calculation function with caching
 calculate_exon15_psi <- function(rse) {
   if(is.null(rse)) return(NULL)
+  
+  # Create cache filename based on RSE object characteristics
+  cache_key <- digest::digest(list(
+    coords = as.data.frame(rowRanges(rse)),
+    counts = assay(rse)
+  ))
+  cache_file <- file.path(CACHE_DIR, paste0("psi_comparison_", cache_key, ".rds"))
+  
+  # Check cache first
+  cached_data <- get_cached_data(cache_file)
+  if (!is.null(cached_data)) {
+    return(cached_data)
+  }
   
   # Get junction counts
   junction_counts <- assay(rse)
@@ -173,102 +213,155 @@ calculate_exon15_psi <- function(rse) {
       return(NA)
     }
   })
-
-  # psi_values <- sapply(seq_len(ncol(junction_counts)), function(i) {
-  #   # Separate upstream and downstream inclusion reads
-  #   upstream_reads <- sum(junction_counts[junctions$details$upstream, i])
-  #   downstream_reads <- sum(junction_counts[junctions$details$downstream, i])
-  #   exclusion_reads <- sum(junction_counts[junctions$exclusion, i])
-    
-  #   if(exclusion_reads >= 10) {  # Changed threshold condition
-  #       psi <- 100 * ((upstream_reads + downstream_reads)/2) / exclusion_reads
-  #       return(psi)
-  #   } else {
-  #       return(NA)
-  #   }
-  # })
   
-  # Log summary statistics
-  flog.info("PSI calculation complete:")
-  flog.info("Total samples: %d", length(psi_values))
-  flog.info("Non-NA samples: %d", sum(!is.na(psi_values)))
-  flog.info("Mean PSI: %.2f", mean(psi_values, na.rm = TRUE))
-  
-  return(list(
+  result <- list(
     psi = psi_values,
     junctions = list(
       inclusion = rownames(junction_counts)[junctions$inclusion],
       exclusion = rownames(junction_counts)[junctions$exclusion]
     )
-  ))
+  )
+  
+  # Cache the results
+  save_cached_data(result, cache_file)
+  
+  return(result)
 }
 
-# Main analysis
+# Main analysis with caching
 main_analysis <- function() {
+  # Check for cached final results
+  final_cache_file <- file.path(CACHE_DIR, "final_comparison_analysis.rds")
+  cached_results <- get_cached_data(final_cache_file)
+  if (!is.null(cached_results)) {
+    return(cached_results)
+  }
+  
   # Get projects
   projects <- available_projects()
   
-  # Process TCGA data
-  tcga_project <- subset(projects, project == "GBM" & file_source == "tcga")
-  tcga_rse <- create_rse_safe(tcga_project)
-  tcga_psi <- calculate_exon15_psi(tcga_rse)
-  
-  # Process GTEx data
+  # Process GTEx brain data
   gtex_project <- subset(projects, project == "BRAIN" & file_source == "gtex")
   gtex_rse <- create_rse_safe(gtex_project)
-  gtex_psi <- calculate_exon15_psi(gtex_rse)
   
-  # Create comparison plot
-  if(!is.null(tcga_psi) && !is.null(gtex_psi)) {
-    # Prepare data for plotting
-    plot_data <- data.frame(
-      dataset = c(rep("TCGA", length(tcga_psi$psi)), 
-                 rep("GTEx", length(gtex_psi$psi))),
-      PSI = c(tcga_psi$psi, gtex_psi$psi)
-    )
-    
-    # Remove NA values
-    plot_data <- plot_data[!is.na(plot_data$PSI),]
-    
-    # Create plot
-    p <- ggplot(plot_data, aes(x = dataset, y = PSI, fill = dataset)) +
-      geom_boxplot(alpha = 0.7) +
-      geom_jitter(width = 0.2, size = 1, alpha = 0.5) +
-      theme_minimal() +
-      labs(
-        title = "SRRM3 Exon 15 PSI Values",
-        y = "Percent Spliced In (PSI)",
-        x = "Dataset"
-      ) +
-      theme(legend.position = "none")
-    
-    # Save results
-    ggsave("SRRM3_exon15_PSI_comparison.pdf", p, width = 8, height = 6)
-    
-    # Perform statistical test
-    test_result <- wilcox.test(
-      PSI ~ dataset, 
-      data = plot_data,
-      alternative = "two.sided"
-    )
-    
-    # Save summary statistics
-    summary_stats <- plot_data %>%
-      group_by(dataset) %>%
-      summarize(
-        mean_PSI = mean(PSI),
-        median_PSI = median(PSI),
-        sd_PSI = sd(PSI),
-        n_samples = n()
+  # Process TCGA GBM data
+  tcga_project <- subset(projects, project == "GBM" & file_source == "tcga")
+  tcga_rse <- create_rse_safe(tcga_project)
+  
+  # Combine results
+  final_results <- list(
+    gtex = list(
+      rse = gtex_rse,
+      psi = calculate_exon15_psi(gtex_rse)
+    ),
+    tcga = list(
+      GBM = list(
+        rse = tcga_rse,
+        psi = calculate_exon15_psi(tcga_rse)
       )
-    
-    write.csv(summary_stats, "SRRM3_exon15_summary.csv", row.names = FALSE)
-    
-    # Print results
-    print(summary_stats)
-    print(paste("Wilcoxon test p-value:", test_result$p.value))
+    )
+  )
+  
+  # Cache final results
+  save_cached_data(final_results, final_cache_file)
+  
+  return(final_results)
+}
+
+# Run the analysis
+results <- main_analysis()
+
+# Prepare data for plotting
+plot_data <- data.frame(
+  PSI = numeric(),
+  dataset = character(),
+  stringsAsFactors = FALSE
+)
+
+# Add GTEx data
+if (!is.null(results$gtex$psi)) {
+  plot_data <- rbind(plot_data, data.frame(
+    PSI = results$gtex$psi$psi,
+    dataset = "GTEx Brain",
+    stringsAsFactors = FALSE
+  ))
+}
+
+# Add TCGA data
+for (project in names(results$tcga)) {
+  if (!is.null(results$tcga[[project]]$psi)) {
+    plot_data <- rbind(plot_data, data.frame(
+      PSI = results$tcga[[project]]$psi$psi,
+      dataset = project,
+      stringsAsFactors = FALSE
+    ))
   }
 }
 
-# Run analysis
-main_analysis()
+# After loading the data, clean it up
+plot_data <- plot_data %>%
+  # Remove NA values
+  filter(!is.na(PSI)) %>%
+  # Ensure PSI values are between 0 and 100
+  mutate(PSI = pmax(0, pmin(100, PSI))) %>%
+  # Combine all TCGA samples into one group
+  mutate(dataset = ifelse(dataset == "GTEx Brain", "GTEx", "TCGA"))
+
+# Create plot
+p <- ggplot(plot_data, aes(x = dataset, y = PSI, fill = dataset)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +  # Hide boxplot outliers since we're showing all points
+  geom_jitter(width = 0.2, size = 0.8, alpha = 0.5, color = "grey30") +
+  scale_fill_manual(values = c("GTEx" = "#FFB6B6", "TCGA" = "#7FDBDB")) +
+  theme_minimal() +
+  labs(
+    title = "SRRM3 Exon 15 PSI Values",
+    y = "Percent Spliced In (PSI)",
+    x = "Dataset"
+  ) +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_line(color = "grey90"),
+    panel.grid.minor = element_line(color = "grey95"),
+    axis.text = element_text(color = "grey30"),
+    plot.title = element_text(size = 14),
+    axis.title = element_text(size = 12)
+  ) +
+  scale_y_continuous(
+    limits = c(0, 100),
+    breaks = seq(0, 100, 25)
+  )
+
+# Save results
+output_dir <- "./output"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+}
+
+ggsave(file.path(output_dir, "PSI_comparison.pdf"), p, width = 8, height = 6)
+
+# Perform statistical test
+test_result <- wilcox.test(
+  PSI ~ dataset, 
+  data = plot_data,
+  alternative = "two.sided"
+)
+
+# Save summary statistics with combined TCGA samples
+summary_stats <- plot_data %>%
+  group_by(dataset) %>%
+  summarise(
+    mean_PSI = mean(PSI, na.rm = TRUE),
+    median_PSI = median(PSI, na.rm = TRUE),
+    sd_PSI = sd(PSI, na.rm = TRUE),
+    n_samples = n()
+  )
+
+write.csv(
+  summary_stats,
+  file.path(output_dir, "PSI_comparison_summary.csv"),
+  row.names = FALSE
+)
+
+# Log results
+flog.info("Analysis complete. Results saved to output directory.")
+flog.info("Statistical test p-value: %g", test_result$p.value)

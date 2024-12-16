@@ -1,3 +1,9 @@
+### Output #################################
+# "PSI_values_GTEx_brain_regions_violin.pdf"
+# "PSI_values_GTEx_brain_regions_means.pdf"
+# "PSI_values_GTEx_brain_regions_summary.csv"
+###########################################
+
 # Load required libraries
 library(recount3)
 library(GenomicRanges)
@@ -6,14 +12,33 @@ library(tidyr)
 library(ggplot2)
 library(ggrepel)
 library(SummarizedExperiment)
-library(progress)
 library(futile.logger)
-library(R.utils)
-library(viridis)
+library(digest)
 
 # Set up logging
-flog.appender(appender.file("srrm3_analysis.log"))
+flog.appender(appender.file("./logs/psi_values_gtex.log"))
 flog.threshold(DEBUG)
+
+# Define cache directory
+CACHE_DIR <- "../cache"
+if (!dir.exists(CACHE_DIR)) {
+  dir.create(CACHE_DIR)
+}
+
+# Function to get cached data
+get_cached_data <- function(cache_file) {
+  if (file.exists(cache_file)) {
+    flog.info("Loading cached data from %s", cache_file)
+    return(readRDS(cache_file))
+  }
+  return(NULL)
+}
+
+# Function to save cached data
+save_cached_data <- function(data, cache_file) {
+  flog.info("Saving data to cache: %s", cache_file)
+  saveRDS(data, cache_file)
+}
 
 # Define SRRM3 information
 SRRM3_INFO <- list(
@@ -27,10 +52,6 @@ SRRM3_INFO <- list(
     start = 76283524,
     end = 76283602,
     length = 79
-  ),
-  transcripts = list(
-    with_exon15 = "NM_001291831.2",    # 16 exons
-    without_exon15 = "NM_001110199.3"   # 15 exons
   )
 )
 
@@ -94,8 +115,16 @@ find_exon15_junctions <- function(jxn_coords) {
   ))
 }
 
-# Simplified RSE creation function
+# Modified RSE creation function with caching
 create_rse_safe <- function(project_info) {  
+  # Create cache filename based on project info
+  cache_file <- file.path(CACHE_DIR, paste0("rse_gtex_", project_info$project, ".rds"))
+  
+  # Check cache first
+  cached_data <- get_cached_data(cache_file)
+  if (!is.null(cached_data)) {
+    return(cached_data)
+  }
   
   tryCatch({
     flog.info("Creating RSE for project: %s", project_info$project)
@@ -135,6 +164,9 @@ create_rse_safe <- function(project_info) {
     rm(rse)
     gc()
     
+    # Cache the filtered RSE object
+    save_cached_data(rse_filtered, cache_file)
+    
     return(rse_filtered)
   }, error = function(e) {
     flog.error("Error creating RSE: %s", e$message)
@@ -142,9 +174,22 @@ create_rse_safe <- function(project_info) {
   })
 }
 
-# Calculate PSI for exon 15
+# Modified PSI calculation function with caching
 calculate_exon15_psi <- function(rse) {
   if(is.null(rse)) return(NULL)
+  
+  # Create cache filename based on RSE object characteristics
+  cache_key <- digest::digest(list(
+    coords = as.data.frame(rowRanges(rse)),
+    counts = assay(rse)
+  ))
+  cache_file <- file.path(CACHE_DIR, paste0("psi_gtex_", cache_key, ".rds"))
+  
+  # Check cache first
+  cached_data <- get_cached_data(cache_file)
+  if (!is.null(cached_data)) {
+    return(cached_data)
+  }
   
   # Get junction counts
   junction_counts <- assay(rse)
@@ -173,44 +218,38 @@ calculate_exon15_psi <- function(rse) {
       return(NA)
     }
   })
-
-  # psi_values <- sapply(seq_len(ncol(junction_counts)), function(i) {
-  #   # Separate upstream and downstream inclusion reads
-  #   upstream_reads <- sum(junction_counts[junctions$details$upstream, i])
-  #   downstream_reads <- sum(junction_counts[junctions$details$downstream, i])
-  #   exclusion_reads <- sum(junction_counts[junctions$exclusion, i])
-    
-  #   if(exclusion_reads >= 10) {  # Changed threshold condition
-  #       psi <- 100 * ((upstream_reads + downstream_reads)/2) / exclusion_reads
-  #       return(psi)
-  #   } else {
-  #       return(NA)
-  #   }
-  # })
   
-  # Log summary statistics
-  flog.info("PSI calculation complete:")
-  flog.info("Total samples: %d", length(psi_values))
-  flog.info("Non-NA samples: %d", sum(!is.na(psi_values)))
-  flog.info("Mean PSI: %.2f", mean(psi_values, na.rm = TRUE))
-  
-  return(list(
+  result <- list(
     psi = psi_values,
     junctions = list(
       inclusion = rownames(junction_counts)[junctions$inclusion],
       exclusion = rownames(junction_counts)[junctions$exclusion]
     )
-  ))
+  )
+  
+  # Cache the results
+  save_cached_data(result, cache_file)
+  
+  return(result)
 }
 
-# New function to process brain region metadata
+# Modified metadata processing function with caching
 process_brain_metadata <- function(rse) {
+  # Create cache filename based on metadata characteristics
+  cache_key <- digest::digest(as.data.frame(colData(rse)))
+  cache_file <- file.path(CACHE_DIR, paste0("metadata_gtex_", cache_key, ".rds"))
+  
+  # Check cache first
+  cached_data <- get_cached_data(cache_file)
+  if (!is.null(cached_data)) {
+    return(cached_data)
+  }
+  
   # Extract metadata
   metadata <- colData(rse) %>% 
     as.data.frame()
   
   # Clean up tissue type information from GTEx metadata
-  # The brain region information is typically in gtex.smtsd or gtex.smts field
   metadata$brain_region <- metadata$gtex.smtsd
   
   # Remove "Brain -" prefix if present
@@ -223,47 +262,68 @@ process_brain_metadata <- function(rse) {
     flog.info("  - %s", region)
   }
   
+  # Cache the processed metadata
+  save_cached_data(metadata, cache_file)
+  
   return(metadata)
 }
 
-# Get projects
-projects <- available_projects()
-
-# Process GTEx brain data
-gtex_project <- subset(projects, project == "BRAIN" & file_source == "gtex")
-gtex_rse <- create_rse_safe(gtex_project)
-
-if(is.null(gtex_rse)) {
-  flog.error("Failed to create RSE for GTEx brain data")
-  stop("RSE creation failed")
+# Main analysis with caching
+main_analysis <- function() {
+  # Check for cached final results
+  final_cache_file <- file.path(CACHE_DIR, "final_gtex_analysis.rds")
+  cached_results <- get_cached_data(final_cache_file)
+  if (!is.null(cached_results)) {
+    return(cached_results)
+  }
+  
+  # Get projects
+  projects <- available_projects()
+  
+  # Process GTEx brain data
+  gtex_project <- subset(projects, project == "BRAIN" & file_source == "gtex")
+  gtex_rse <- create_rse_safe(gtex_project)
+  
+  if(is.null(gtex_rse)) {
+    flog.error("Failed to create RSE for GTEx brain data")
+    stop("RSE creation failed")
+  }
+  
+  # Calculate PSI values
+  gtex_psi <- calculate_exon15_psi(gtex_rse)
+  
+  if(is.null(gtex_psi)) {
+    flog.error("Failed to calculate PSI values for GTEx brain data")
+    stop("PSI calculation failed")
+  }
+  
+  # Process metadata
+  metadata <- process_brain_metadata(gtex_rse)
+  
+  # Combine results
+  final_results <- list(
+    rse = gtex_rse,
+    psi = gtex_psi,
+    metadata = metadata
+  )
+  
+  # Cache final results
+  save_cached_data(final_results, final_cache_file)
+  
+  return(final_results)
 }
 
-# Calculate PSI values
-gtex_psi <- calculate_exon15_psi(gtex_rse)
+# Run analysis and create plots
+results <- main_analysis()
 
-if(is.null(gtex_psi)) {
-  flog.error("Failed to calculate PSI values for GTEx brain data")
-  stop("PSI calculation failed")
-}
-
-# Process metadata
-metadata <- process_brain_metadata(gtex_rse)
-
-# Combine PSI values with metadata
+# Create plot data
 plot_data <- data.frame(
-  sample_id = colnames(gtex_rse),
-  PSI = gtex_psi$psi,
-  brain_region = metadata$brain_region
+  sample_id = colnames(results$rse),
+  PSI = results$psi$psi,
+  brain_region = results$metadata$brain_region
 ) %>%
   filter(!is.na(PSI)) %>%  # Remove NA values
   filter(brain_region != "") # Remove empty brain regions
-
-# Check if we have multiple brain regions
-if(length(unique(plot_data$brain_region)) <= 1) {
-  flog.error("Only one brain region found. Check metadata extraction.")
-  print(table(metadata$brain_region))
-  stop("Insufficient brain regions")
-}
 
 # Calculate summary statistics
 summary_stats <- plot_data %>%
@@ -315,52 +375,11 @@ p2 <- ggplot(summary_stats,
     plot.title = element_text(size = 12)
   )
 
-# Try to save plots
+# Save outputs
 tryCatch({
-  ggsave("SRRM3_exon15_PSI_brain_regions_violin.pdf", p1, width = 12, height = 7)
-  ggsave("SRRM3_exon15_PSI_brain_regions_means.pdf", p2, width = 12, height = 7)
+  ggsave("./output/PSI_values_GTEx_brain_regions_violin.pdf", p1, width = 12, height = 7)
+  ggsave("./output/PSI_values_GTEx_brain_regions_means.pdf", p2, width = 12, height = 7)
+  write.csv(summary_stats, "./output/PSI_values_GTEx_brain_regions_summary.csv", row.names = FALSE)
 }, error = function(e) {
-  flog.error("Error saving plots: %s", e$message)
+  flog.error("Error saving outputs: %s", e$message)
 })
-
-# # Perform statistical test (Kruskal-Wallis)
-# kw_test <- tryCatch({
-#   kruskal.test(PSI ~ brain_region, data = plot_data)
-# }, error = function(e) {
-#   flog.error("Error in Kruskal-Wallis test: %s", e$message)
-#   return(NULL)
-# })
-
-# # If Kruskal-Wallis is significant, perform pairwise Wilcoxon tests
-# if(!is.null(kw_test) && kw_test$p.value < 0.05) {
-#   pairwise_tests <- tryCatch({
-#     pairwise.wilcox.test(
-#       plot_data$PSI,
-#       plot_data$brain_region,
-#       p.adjust.method = "BH"
-#     )
-#   }, error = function(e) {
-#     flog.error("Error in pairwise Wilcoxon tests: %s", e$message)
-#     return(NULL)
-#   })
-# }
-
-# Try to save summary statistics
-tryCatch({
-  write.csv(summary_stats, "SRRM3_exon15_brain_regions_summary.csv", row.names = FALSE)
-}, error = function(e) {
-  flog.error("Error saving summary statistics: %s", e$message)
-})
-
-# Print results
-flog.info("Summary statistics by brain region:")
-print(summary_stats)
-
-# if(!is.null(kw_test)) {
-#   flog.info("Kruskal-Wallis test p-value: %f", kw_test$p.value)
-#   
-#   if(exists("pairwise_tests") && !is.null(pairwise_tests)) {
-#     flog.info("Significant differences between brain regions detected")
-#     print(pairwise_tests)
-#   }
-# }

@@ -1,7 +1,7 @@
 ### Output #################################
-# "PSI_values_dataset_ids_TCGA_violin.pdf"
-# "PSI_values_dataset_ids_TCGA_summary.pdf"
-# "PSI_values_dataset_ids_TCGA_cancer_types.csv"
+# "PSI_values_dataset_id.pdf"
+# "PSI_values_dataset_id.pdf"
+# "PSI_values_dataset_id.csv"
 ###########################################
 
 # Analysis of SRRM3 isoform expression across cancer types
@@ -15,8 +15,11 @@ library(futile.logger)
 library(viridis)
 library(digest)
 
+# Source common theme
+source("common_theme.R")
+
 # Set up logging
-flog.appender(appender.file("./logs/PSI_values_dataset_ids_TCGA.log"))
+flog.appender(appender.file("./logs/PSI_values_dataset_id.log"))
 flog.threshold(DEBUG)
 
 # Define cache directory
@@ -92,7 +95,7 @@ find_exon15_junctions <- function(jxn_coords) {
 # Modified RSE creation function with caching
 create_rse_safe <- function(project_info) {  
   # Create cache filename based on project info
-  cache_file <- file.path(CACHE_DIR, paste0("rse_dataset_ids_TCGA_", project_info$project, ".rds"))
+  cache_file <- file.path(CACHE_DIR, paste0("PSI_values_dataset_id", project_info$project, ".rds"))
   
   # Check cache first
   cached_data <- get_cached_data(cache_file)
@@ -207,7 +210,7 @@ get_cancer_type <- function(project) {
 # Modified main analysis function with caching
 analyze_cancer_types <- function() {
   # Check for cached final results
-  final_cache_file <- file.path(CACHE_DIR, "final_analysis_dataset_ids_TCGA.rds")
+  final_cache_file <- file.path(CACHE_DIR, "PSI_values_dataset_id.rds")
   cached_results <- get_cached_data(final_cache_file)
   if (!is.null(cached_results)) {
     return(cached_results)
@@ -289,7 +292,7 @@ analyze_cancer_types <- function() {
 
 # Function to plot cancer type distributions
 plot_cancer_distributions <- function(results) {
-  # Calculate summary statistics for cancer types with at least 10 samples
+  # Calculate summary statistics
   summary_stats <- results %>%
     group_by(cancer_type) %>%
     summarise(
@@ -306,17 +309,14 @@ plot_cancer_distributions <- function(results) {
                aes(x = reorder(cancer_type, psi, FUN = median), y = psi)) +
     geom_violin(aes(fill = cancer_type), alpha = 0.7) +
     geom_boxplot(width = 0.1, fill = "white", alpha = 0.7) +
-    theme_minimal() +
-    theme(
-      axis.text.x = element_text(angle = 45, hjust = 1),
-      legend.position = "none"
-    ) +
-    scale_fill_viridis(discrete = TRUE) +
+    scale_fill_viridis_d() +
+    get_tcga_theme() +
     labs(
-      title = "SRRM3 PSI values Distribution Across Cancer Types",
+      title = "SRRM3 PSI Values Distribution Across Cancer Types",
       subtitle = "Ratio of long (16 exons) to short (15 exons) isoform",
       x = "Cancer Type",
-      y = "PSI Value"
+      y = "PSI Value",
+      fill = "Cancer Type"
     )
   
   # Create summary plot
@@ -324,20 +324,17 @@ plot_cancer_distributions <- function(results) {
                aes(x = reorder(cancer_type, median_psi), y = median_psi)) +
     geom_point(aes(size = n_samples), alpha = 0.7) +
     geom_errorbar(aes(ymin = median_psi - sd_psi, 
-                     ymax = median_psi + sd_psi), 
-                 width = 0.2) +
-    theme_minimal() +
-    theme(
-      axis.text.x = element_text(angle = 45, hjust = 1)
-    ) +
+                      ymax = median_psi + sd_psi), 
+                  width = 0.2) +
+    scale_size_continuous(name = "Number of Samples") +
+    get_tcga_theme() +
     labs(
-      title = "SRRM3 PSI values Distribution Summary by Cancer Type",
+      title = "SRRM3 PSI Values Distribution Summary by Cancer Type",
       subtitle = "Median PSI values with standard deviation",
       x = "Cancer Type",
-      y = "Median PSI Value",
-      size = "Number of Samples"
+      y = "Median PSI Value"
     )
-  
+    
   return(list(distribution_plot = p1, summary_plot = p2))
 }
 
@@ -348,12 +345,12 @@ results <- analyze_cancer_types()
 
 if(!is.null(results) && nrow(results) > 0) {
   # Save results
-  write.csv(results, "./output/PSI_values_dataset_ids_TCGA_cancer_types.csv", row.names = FALSE)
+  write.csv(results, "./output/PSI_values_dataset_id.csv", row.names = FALSE)
   
   # Create and save plots
   plots <- plot_cancer_distributions(results)
-  ggsave("./output/PSI_values_dataset_ids_TCGA_violin.pdf", plots$distribution_plot, width = 12, height = 8)
-  ggsave("./output/PSI_values_dataset_ids_TCGA_summary.pdf", plots$summary_plot, width = 12, height = 8)
+  ggsave("./output/PSI_values_dataset_id_violin.pdf", plots$distribution_plot, width = 12, height = 8)
+  ggsave("./output/PSI_values_dataset_id_summary.pdf", plots$summary_plot, width = 12, height = 8)
   
   flog.info("Analysis complete. Results and plots saved.")
 } else {

@@ -15,8 +15,11 @@ library(futile.logger)
 library(viridis)
 library(scales)
 
+# Source common theme
+source("common_theme.R")
+
 # Set up logging
-flog.appender(appender.file("./logs/SRRM3_expression_TCGA.log"))
+flog.appender(appender.file("./logs/SRRM3_expression.log"))
 flog.threshold(DEBUG)
 
 # Function to get expression data
@@ -148,22 +151,18 @@ plot_cancer_distributions <- function(analysis_data, use_full_names = FALSE) {
     geom_errorbar(aes(ymin = mean_expr - se, 
                       ymax = mean_expr + se),
                   width = 0.25) +
-    theme_minimal() +
-    theme(
-      axis.text.x = element_text(angle = 45, hjust = 1),
-      plot.title = element_text(hjust = 0.5)
-    ) +
+    scale_y_continuous(labels = comma) +
+    get_tcga_theme() +
     labs(
       title = "SRRM3 Expression Across Cancer Types",
+      subtitle = if(use_full_names) "Using full cancer type names" else "Using TCGA type codes",
       x = "Cancer Type",
       y = "Mean Expression (normalized counts)"
     )
   
   # Save plot
   ggsave(sprintf("./output/SRRM3_expression_TCGA_%s.pdf", name_type), 
-         p1, width = 15, height = 10, dpi = 300)
-  ggsave(sprintf("./output/SRRM3_expression_TCGA_%s.png", name_type), 
-         p1, width = 15, height = 10, dpi = 300)
+         p1, width = 15, height = 8)
   
   return(p1)
 }

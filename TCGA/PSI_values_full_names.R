@@ -1,7 +1,7 @@
 ### Output #################################
-# "PSI_values_full_names_cancer_types_violin.pdf"
-# "PSI_values_full_names_cancer_types_means.pdf"
-# "PSI_values_full_names_cancer_types_summary.csv"
+# "PSI_values_full_names.pdf"
+# "PSI_values_full_names.pdf"
+# "PSI_values_full_names.csv"
 ###########################################
 
 # Load required libraries
@@ -17,8 +17,11 @@ library(futile.logger)
 library(R.utils)
 library(viridis)
 
+# Source common theme
+source("common_theme.R")
+
 # Set up logging
-flog.appender(appender.file("./logs/PSI_values_full_names_TCGA.log"))
+flog.appender(appender.file("./logs/PSI_values_full_names.log"))
 flog.threshold(DEBUG)
 
 # Define cache directory
@@ -283,7 +286,7 @@ process_tcga_metadata <- function(rse) {
 # Main analysis with caching
 main_analysis <- function() {
   # Check for cached final results
-  final_cache_file <- file.path(CACHE_DIR, "final_psi_analysis_full_names_TCGA.rds")
+  final_cache_file <- file.path(CACHE_DIR, "PSI_values_full_names.rds")
   cached_results <- get_cached_data(final_cache_file)
   if (!is.null(cached_results)) {
     return(cached_results)
@@ -337,7 +340,6 @@ main_analysis <- function() {
   
   return(final_results)
 }
-
 # Run analysis and create plots
 results <- main_analysis()
 
@@ -371,43 +373,37 @@ p1 <- ggplot(plot_data, aes(x = reorder(cancer_type, PSI, FUN = median),
                            fill = cancer_type)) +
   geom_violin(alpha = 0.7) +
   geom_boxplot(width = 0.1, fill = "white", alpha = 0.7) +
-  theme_minimal() +
+  scale_fill_viridis_d() +
+  get_tcga_theme() +
   labs(
     title = "SRRM3 Exon 15 PSI Values Across Cancer Types",
+    subtitle = "Distribution of Percent Spliced In values",
+    x = "Cancer Type",
     y = "Percent Spliced In (PSI)",
-    x = "Cancer Type"
-  ) +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    legend.position = "none",
-    plot.title = element_text(size = 12)
+    fill = "Cancer Type"
   )
 
 p2 <- ggplot(summary_stats, 
              aes(x = reorder(cancer_type, mean_PSI), 
-                 y = mean_PSI, 
-                 color = cancer_type)) +
-  geom_point(size = 3) +
+                 y = mean_PSI)) +
+  geom_point(aes(size = n_samples), alpha = 0.7) +
   geom_errorbar(aes(ymin = mean_PSI - sd_PSI, 
                     ymax = mean_PSI + sd_PSI), 
                 width = 0.2) +
-  theme_minimal() +
+  scale_size_continuous(name = "Number of Samples") +
+  get_tcga_theme() +
   labs(
     title = "Mean SRRM3 Exon 15 PSI Values by Cancer Type",
-    y = "Mean PSI",
-    x = "Cancer Type"
-  ) +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    legend.position = "none",
-    plot.title = element_text(size = 12)
+    subtitle = "Error bars show standard deviation",
+    x = "Cancer Type",
+    y = "Mean PSI"
   )
 
 # Save plots and results
 tryCatch({
-  ggsave("./output/PSI_values_full_names_cancer_types_violin.pdf", p1, width = 15, height = 8)
-  ggsave("./output/PSI_values_full_names_cancer_types_means.pdf", p2, width = 15, height = 8)
-  write.csv(summary_stats, "./output/PSI_values_full_names_cancer_types_summary.csv", row.names = FALSE)
+  ggsave("./output/PSI_values_full_namess_violin.pdf", p1, width = 15, height = 8)
+  ggsave("./output/PSI_values_full_names_means.pdf", p2, width = 15, height = 8)
+  write.csv(summary_stats, "./output/PSI_values_full_names_summary.csv", row.names = FALSE)
 }, error = function(e) {
   flog.error("Error saving outputs: %s", e$message)
 })

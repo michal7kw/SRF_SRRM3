@@ -22,6 +22,9 @@ library(corrplot)
 library(reshape2)
 library(futile.logger)
 
+# Source common theme
+source("common_theme.R")
+
 # Set up logging
 flog.appender(appender.file("./logs/SRRM3_and_SRRM4_expressions_TCGA.log"))
 flog.threshold(DEBUG)
@@ -245,7 +248,7 @@ plot_expression_summary <- function(analysis_data, use_full_names = FALSE) {
 # Modified main_analysis function
 main_analysis <- function() {
   # Check for cached final results
-  final_cache_file <- file.path(CACHE_DIR, "SRRM3_and_SRRM4_expressions_TCGA.rds")
+  final_cache_file <- file.path(CACHE_DIR, "SRRM3_and_SRRM4_expressions.rds")
   cached_results <- get_cached_data(final_cache_file)
   
   if (!is.null(cached_results)) {

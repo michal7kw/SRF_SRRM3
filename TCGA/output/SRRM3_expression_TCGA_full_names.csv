@@ -1,0 +1,104 @@
+"cancer_type","mean_expr","sd_expr","sample_size"
+"",41892,NA,1
+"ACC",619006.35443038,498529.400887791,79
+"Adenosquamous",35754.1666666667,38583.4562288899,6
+"Astrocytoma",85725.6989795918,102316.920420348,196
+"BLCA",53440.6,26515.8359626846,5
+"BRCA",34281,28612.1210486046,21
+"CHOL",64698.2222222222,106807.057251273,45
+"COAD",9469.125,11007.452234574,8
+"Cervical Squamous Cell Carcinoma",110351.741176471,131854.548507937,255
+"Colon Adenocarcinoma",7637.28540772532,24099.4370985456,466
+"Colon Mucinous Adenocarcinoma",7711.73611111111,8798.25005646818,72
+"DLBC",3619,NA,1
+"Diffuse large B-cell lymphoma (DLBCL) NOS (any anatomic site nodal or extranodal)",5276.225,3552.51957888107,40
+"ESCA",110717.601010101,120972.819826769,198
+"Endocervical Adenocarcinoma of the Usual Type",10857.3333333333,11359.1258583866,6
+"Endocervical Type of Adenocarcinoma",31221.3636363636,44244.7382650998,22
+"Endometrioid Adenocarcinoma of Endocervix",7861.66666666667,3235.9496802845,3
+"Endometrioid endometrial adenocarcinoma",13095.9461358314,23725.2077190905,427
+"Fibrolamellar Carcinoma",4941.5,2492.55140368258,2
+"GBM",155660,70908.5766378088,6
+"Glioblastoma Multiforme (GBM)",32070,NA,1
+"HNSC",98862,NA,1
+"Head and Neck Squamous Cell Carcinoma",71870.7481343284,63504.5982514829,536
+"Head and Neck Squamous Cell Carcinoma  Spindle Cell Variant",74630,NA,1
+"Head and Neck Squamous Cell Carcinoma Basaloid Type",108999.3,68210.8625563244,10
+"Hepatocellular Carcinoma",19837.8962962963,85762.3175505576,405
+"Hepatocholangiocarcinoma (Mixed)",21137.5,19524.5797028112,8
+"Infiltrating Carcinoma NOS",33376,NA,1
+"Infiltrating Ductal Carcinoma",27781.3515625,35617.8038466807,896
+"Infiltrating Lobular Carcinoma",33715.04784689,29812.8825187137,209
+"KIRC",16681.3333333333,6625.14953290364,3
+"KIRP",98765.5,73124.0335628444,2
+"Kidney Chromophobe",252119.934065934,393752.219618091,91
+"Kidney Clear Cell Renal Carcinoma",17386.0861788618,38694.7428512347,615
+"Kidney Papillary Renal Cell Carcinoma",38923.2211838006,63271.5265999272,321
+"LAML",346.404494382022,1249.37348112841,178
+"LGG",111312,NA,1
+"LIHC",17066,21796.5066122991,9
+"LUAD",21743,NA,1
+"LUSC",79776,112540.815859551,7
+"Lung Acinar Adenocarcinoma",16988.3157894737,14320.2268606046,19
+"Lung Adenocarcinoma Mixed Subtype",20892.9196428571,29016.4105270857,112
+"Lung Adenocarcinoma- Not Otherwise Specified (NOS)",20864.9119170984,23904.6750528935,386
+"Lung Basaloid Squamous Cell Carcinoma",48914.1176470588,38893.8969166153,17
+"Lung Bronchioloalveolar Carcinoma Mucinous",6242.2,4309.97305095983,5
+"Lung Bronchioloalveolar Carcinoma Nonmucinous",19080.5909090909,16485.5870980542,22
+"Lung Clear Cell Adenocarcinoma",31973.6666666667,34102.6976841031,3
+"Lung Micropapillary Adenocarcinoma",10313,10805.3348397909,3
+"Lung Mucinous Adenocarcinoma",2053.66666666667,1737.39548366705,6
+"Lung Papillary Adenocarcinoma",12334.36,14713.0722881615,25
+"Lung Papillary Squamous Cell Carcinoma",55865.3333333333,61340.0548309721,6
+"Lung Signet Ring Adenocarcinoma",5276,NA,1
+"Lung Small Cell Squamous Cell Carcinoma",8021.5,180.31222920257,2
+"Lung Solid Pattern Predominant Adenocarcinoma",10792,10744.2575592732,5
+"Lung Squamous Cell Carcinoma- Not Otherwise Specified (NOS)",65876.0764818356,69365.9506105775,523
+"MESO",28796.7011494253,27676.8808651061,87
+"Medullary Carcinoma",8995,8468.04612309458,8
+"Metaplastic Carcinoma",24559.5,22989.9041063285,12
+"Mixed Histology (please specify)",36751.1621621622,51736.4356987057,37
+"Mixed serous and endometrioid",9105.91666666667,9144.16280389069,24
+"Mucinous (Colloid) Carcinoma",9240.61538461538,8763.28835291925,13
+"Mucinous Adenocarcinoma of Endocervical Type",13825.4705882353,13339.7138374369,17
+"Mucinous Carcinoma",58136.9444444444,73199.9181729471,18
+"Muscle invasive urothelial carcinoma (pT2 or above)",73616.2803738318,80448.3743965657,428
+"Oligoastrocytoma",161796.296296296,160440.671596759,135
+"Oligodendroglioma",259577.335,205171.841029856,200
+"Other  specify",39347.5538461538,44677.3041536579,65
+"PAAD",37096,NA,1
+"PCPG",263840.903743315,126961.302796295,187
+"PRAD",13396,NA,1
+"Pancreas-Adenocarcinoma Ductal Type",35279.9733333333,21841.142341719,150
+"Pancreas-Adenocarcinoma-Other Subtype",92205.6296296296,125742.471931309,27
+"Pancreas-Colloid (mucinous non-cystic) Carcinoma",20500.75,18707.8273702925,4
+"Pancreas-Undifferentiated Carcinoma",37030,NA,1
+"Primary DLBCL of the CNS",6862.33333333333,5539.95391075895,3
+"Primary mediastinal (thymic) DLBCL",6569.75,2269.25911183952,4
+"Prostate Adenocarcinoma  Other Subtype",11410.3125,7675.91853108365,16
+"Prostate Adenocarcinoma Acinar Type",13961.2144177449,13107.1748856712,541
+"READ",4304.14285714286,4041.58753579875,7
+"Rectal Adenocarcinoma",7316.37820512821,10047.0249201622,156
+"Rectal Mucinous Adenocarcinoma",7368,12132.3562300283,14
+"SARC",30690.7698113208,45707.8133417133,265
+"SKCM",44266.9217758985,58066.7372495974,473
+"STAD",25222.25,21869.464532006,4
+"Serous Cystadenocarcinoma",32419.0815850816,65095.7874970787,429
+"Serous endometrial adenocarcinoma",8406.42276422764,12669.4058208186,123
+"Stomach  Adenocarcinoma  Diffuse Type",29320.1333333333,33267.1602994212,75
+"Stomach  Adenocarcinoma  Not Otherwise Specified (NOS)",42198.0175438596,64871.4005702571,171
+"Stomach  Intestinal Adenocarcinoma  Not Otherwise Specified (NOS)",29464.4634146341,45309.7065076269,82
+"Stomach  Intestinal Adenocarcinoma  Tubular Type",64969.3125,204879.153786799,80
+"Stomach Adenocarcinoma  Signet Ring Type",50109.5,50202.2511112436,12
+"Stomach Intestinal Adenocarcinoma Mucinous Type",46214,55917.6966755606,21
+"Stomach Intestinal Adenocarcinoma Papillary Type",35406.375,33118.323322542,8
+"TGCT",30945.2564102564,22009.5168031473,156
+"THYM",4902.55737704918,22411.6883304002,122
+"Thyroid Papillary Carcinoma - Classical/usual",31768.9394673123,21330.7099302818,413
+"Thyroid Papillary Carcinoma - Follicular (>= 99% follicular patterned)",39618.6880733945,67497.4972403912,109
+"Thyroid Papillary Carcinoma - Tall Cell (>= 50% tall cell features)",25577.2820512821,11272.3870445222,39
+"Treated primary GBM",35995,NA,1
+"UCEC",36956.0666666667,18436.2089512795,15
+"UCS",36772.6842105263,55986.1133595893,57
+"UVM",98596.7875,45709.2667857789,80
+"Untreated primary (de novo) GBM",63109.7904191617,84226.785937488,167

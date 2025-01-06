@@ -1,7 +1,7 @@
 ### Output #################################
-# "PSI_values_GTEx_brain_regions_violin.pdf"
-# "PSI_values_GTEx_brain_regions_means.pdf"
-# "PSI_values_GTEx_brain_regions_summary.csv"
+# "PSI_values_brain_regions.pdf"
+# "PSI_values_brain_regions.pdf"
+# "PSI_values_brain_regions.csv"
 ###########################################
 
 # Load required libraries
@@ -16,7 +16,7 @@ library(futile.logger)
 library(digest)
 
 # Set up logging
-flog.appender(appender.file("./logs/psi_values_gtex.log"))
+flog.appender(appender.file("./logs/PSI_values_brain_regions.log"))
 flog.threshold(DEBUG)
 
 # Define cache directory
@@ -271,7 +271,7 @@ process_brain_metadata <- function(rse) {
 # Main analysis with caching
 main_analysis <- function() {
   # Check for cached final results
-  final_cache_file <- file.path(CACHE_DIR, "final_gtex_analysis.rds")
+  final_cache_file <- file.path(CACHE_DIR, "PSI_values_brain_regions.rds")
   cached_results <- get_cached_data(final_cache_file)
   if (!is.null(cached_results)) {
     return(cached_results)
@@ -377,9 +377,9 @@ p2 <- ggplot(summary_stats,
 
 # Save outputs
 tryCatch({
-  ggsave("./output/PSI_values_GTEx_brain_regions_violin.pdf", p1, width = 12, height = 7)
-  ggsave("./output/PSI_values_GTEx_brain_regions_means.pdf", p2, width = 12, height = 7)
-  write.csv(summary_stats, "./output/PSI_values_GTEx_brain_regions_summary.csv", row.names = FALSE)
+  ggsave("./output/PSI_values_brain_regions_violin.pdf", p1, width = 12, height = 7)
+  ggsave("./output/PSI_values_brain_regions_means.pdf", p2, width = 12, height = 7)
+  write.csv(summary_stats, "./output/PSI_values_brain_regions.csv", row.names = FALSE)
 }, error = function(e) {
   flog.error("Error saving outputs: %s", e$message)
 })

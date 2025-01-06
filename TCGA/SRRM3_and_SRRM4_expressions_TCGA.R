@@ -76,7 +76,23 @@ get_tcga_projects <- function() {
   return(tcga_projects)
 }
 
-# Modified get_expression_data function with caching
+# Modify get_cancer_type function to match other TCGA scripts
+get_cancer_type <- function(project_info, use_full_names = FALSE) {
+  if (use_full_names) {
+    # Get histological diagnosis from clinical data
+    cancer_type <- project_info$tcga.cgc_case_histological_diagnosis
+    if (is.null(cancer_type) || is.na(cancer_type) || cancer_type == "") {
+      # Fallback to project code if no histological diagnosis
+      cancer_type <- sub("^TCGA-", "", project_info$project)
+    }
+  } else {
+    # Use short TCGA code (e.g., "ACC", "BLCA")
+    cancer_type <- sub("^TCGA-", "", project_info$project)
+  }
+  return(cancer_type)
+}
+
+# Modified get_expression_data function
 get_expression_data <- function(project_info) {
   project_name <- project_info$project
   cache_file <- file.path(CACHE_DIR, paste0("srrm_expr_", project_name, ".rds"))
@@ -105,18 +121,34 @@ get_expression_data <- function(project_info) {
       return(NULL)
     }
     
-    # Extract expression data
-    expr_data <- list(
-      project = project_name,
+    # Extract expression data and clinical info
+    data <- data.frame(
+      sample_id = colnames(rse_gene),
       srrm3_expr = assay(rse_gene)[srrm3_idx, ],
       srrm4_expr = assay(rse_gene)[srrm4_idx, ],
-      clinical = colData(rse_gene)
+      stringsAsFactors = FALSE
     )
     
-    # Cache the results
-    save_cached_data(expr_data, cache_file)
+    # Add cancer type information
+    data$cancer_type_short <- sub("^TCGA-", "", project_info$project)
+    data$cancer_type_full <- NA
     
-    return(expr_data)
+    # Get histological diagnosis from clinical data
+    clinical <- as.data.frame(colData(rse_gene))
+    if ("tcga.cgc_case_histological_diagnosis" %in% colnames(clinical)) {
+      hist_diag <- clinical$tcga.cgc_case_histological_diagnosis
+      if (!all(is.na(hist_diag))) {
+        data$cancer_type_full <- hist_diag
+      }
+    }
+    
+    # If no histological diagnosis available, use short name
+    data$cancer_type_full[is.na(data$cancer_type_full)] <- data$cancer_type_short[is.na(data$cancer_type_full)]
+    
+    # Cache the results
+    save_cached_data(data, cache_file)
+    
+    return(data)
   }, error = function(e) {
     flog.error("Error processing project %s: %s", project_name, e$message)
     return(NULL)
@@ -125,165 +157,92 @@ get_expression_data <- function(project_info) {
 
 # Function to analyze expression patterns
 analyze_expression_patterns <- function(results) {
-  # Remove NULL results
-  results <- results[!sapply(results, is.null)]
+  # Create two analysis data frames
+  analysis_data_short <- data.frame()
+  analysis_data_full <- data.frame()
   
-  if(length(results) == 0) {
-    stop("No valid results to analyze")
-  }
-  
-  # Create data frame for analysis
-  analysis_data <- data.frame(
-    project = character(),
-    srrm3_mean = numeric(),
-    srrm3_sd = numeric(),
-    srrm4_mean = numeric(),
-    srrm4_sd = numeric(),
-    correlation = numeric(),
-    sample_size = numeric()
-  )
-  
-  # Calculate statistics for each project
   for(result in results) {
-    project_stats <- data.frame(
-      project = result$project,
-      srrm3_mean = mean(result$srrm3_expr, na.rm = TRUE),
-      srrm3_sd = sd(result$srrm3_expr, na.rm = TRUE),
-      srrm4_mean = mean(result$srrm4_expr, na.rm = TRUE),
-      srrm4_sd = sd(result$srrm4_expr, na.rm = TRUE),
-      correlation = cor(result$srrm3_expr, result$srrm4_expr, 
-                        use = "pairwise.complete.obs"),
+    if(is.null(result)) next
+    
+    # Calculate statistics
+    stats <- data.frame(
+      srrm3_mean = mean(result$srrm3_expr),
+      srrm3_sd = sd(result$srrm3_expr),
+      srrm4_mean = mean(result$srrm4_expr),
+      srrm4_sd = sd(result$srrm4_expr),
+      correlation = cor(result$srrm3_expr, result$srrm4_expr),
       sample_size = length(result$srrm3_expr)
     )
-    analysis_data <- rbind(analysis_data, project_stats)
+    
+    # Add to both datasets with appropriate cancer type
+    analysis_data_short <- rbind(
+      analysis_data_short,
+      cbind(cancer_type = result$cancer_type_short, stats)
+    )
+    
+    analysis_data_full <- rbind(
+      analysis_data_full,
+      cbind(cancer_type = result$cancer_type_full, stats)
+    )
   }
   
-  return(analysis_data)
+  return(list(
+    short_names = analysis_data_short,
+    full_names = analysis_data_full
+  ))
 }
 
 # Visualization functions
 
 
-plot_expression_summary <- function(analysis_data) {
-  # Calculate standard error
-  analysis_data$srrm3_se <- analysis_data$srrm3_sd / sqrt(analysis_data$sample_size)
-  analysis_data$srrm4_se <- analysis_data$srrm4_sd / sqrt(analysis_data$sample_size)
+plot_expression_summary <- function(analysis_data, use_full_names = FALSE) {
+  # Select appropriate data
+  data_to_plot <- if(use_full_names) analysis_data$full_names else analysis_data$short_names
+  name_type <- if(use_full_names) "full_names" else "short_names"
   
-  # First, create long format for means
-  means_long <- reshape2::melt(analysis_data, 
-                               id.vars = "project",
-                               measure.vars = c("srrm3_mean", "srrm4_mean"),
-                               variable.name = "gene",
-                               value.name = "mean")
+  if(is.null(data_to_plot) || nrow(data_to_plot) == 0) {
+    stop(sprintf("No data available for %s", name_type))
+  }
   
-  # Create long format for standard errors
-  se_long <- reshape2::melt(analysis_data, 
-                            id.vars = "project",
-                            measure.vars = c("srrm3_se", "srrm4_se"),
-                            variable.name = "gene",
-                            value.name = "se")
+  # Create plot data
+  plot_data <- data_to_plot %>%
+    tidyr::pivot_longer(
+      cols = c("srrm3_mean", "srrm4_mean"),
+      names_to = "gene",
+      values_to = "mean"
+    ) %>%
+    mutate(
+      gene = ifelse(gene == "srrm3_mean", "SRRM3", "SRRM4"),
+      sd = ifelse(gene == "SRRM3", srrm3_sd, srrm4_sd),
+      se = sd / sqrt(sample_size)
+    )
   
-  # Combine the data
-  plot_data <- means_long
-  plot_data$se <- se_long$se
-  plot_data$sample_size <- rep(analysis_data$sample_size, each = 2)
-  
-  # Clean up gene names
-  plot_data$gene <- gsub("_mean", "", plot_data$gene)
-  plot_data$gene <- toupper(gsub("srrm", "SRRM", plot_data$gene))
-  
-  # Order projects by mean expression of SRRM3
-  project_order <- analysis_data[order(-analysis_data$srrm3_mean), "project"]
-  plot_data$project <- factor(plot_data$project, levels = project_order)
-  
-  # Create sample size data frame for labels
-  sample_labels <- unique(analysis_data[, c("project", "sample_size")])
-  sample_labels$project <- factor(sample_labels$project, levels = project_order)
-  
-  # Calculate max y value for each project to position labels
-  max_values <- aggregate(mean + se ~ project, data = plot_data, max)
-  sample_labels$y_pos <- max_values$`mean + se`
-  
-  # Calculate total samples for subtitle
-  total_samples <- sum(analysis_data$sample_size)
-  sample_text <- sprintf("Total samples: %d", total_samples)
-  
-  # Create enhanced plot
+  # Create plot
   p <- ggplot(plot_data, 
-              aes(x = project, y = mean, fill = gene)) +
-    # Add bars
+              aes(x = reorder(cancer_type, mean), 
+                  y = mean, 
+                  fill = gene)) +
     geom_bar(stat = "identity", 
-             position = position_dodge(width = 0.8),
-             width = 0.7,
-             alpha = 0.8) +
-    # Add error bars using standard error
+             position = position_dodge(0.9)) +
     geom_errorbar(aes(ymin = mean - se, 
                       ymax = mean + se),
-                  position = position_dodge(width = 0.8),
-                  width = 0.25,
-                  color = "black") +
-    # Add sample size labels above bars
-    geom_text(data = sample_labels,
-              aes(x = project, 
-                  y = max(y_pos),
-                  label = sprintf("%d", sample_size)),
-              inherit.aes = FALSE,
-              vjust = -0.5,
-              size = 3,
-              fontface = "bold",
-              color = "black") +
-    # Customize theme
+                  position = position_dodge(0.9),
+                  width = 0.25) +
     theme_minimal() +
-    theme(
-      axis.text.x = element_text(angle = 45, 
-                                 hjust = 1, 
-                                 size = 10),
-      axis.text.y = element_text(size = 10),
-      axis.title = element_text(size = 12, face = "bold"),
-      plot.title = element_text(size = 14, 
-                                face = "bold", 
-                                hjust = 0.5),
-      plot.subtitle = element_text(size = 10, 
-                                   hjust = 0.5),
-      legend.position = "top",
-      legend.title = element_text(size = 10),
-      legend.text = element_text(size = 10),
-      panel.grid.major.x = element_blank(),
-      panel.grid.minor = element_blank(),
-      panel.border = element_rect(color = "black", 
-                                  fill = NA, 
-                                  linewidth = 0.5)
-    ) +
-    # Customize labels
-    labs(
-      title = "Mean Expression Levels of SRRM3 and SRRM4 Across Cancer Types",
-      subtitle = paste("Error bars represent ± standard error of the mean\n", sample_text),
-      x = "Cancer Type",
-      y = "Mean Expression (normalized counts)",
-      fill = "Gene"
-    ) +
-    # Customize colors
-    scale_fill_manual(values = c("SRRM3" = "#2166AC", 
-                                 "SRRM4" = "#B2182B")) +
-    # Adjust y-axis limits to accommodate labels
-    scale_y_continuous(expand = expansion(mult = c(0.05, 0.2)))  # Increased top expansion for labels
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "SRRM3 and SRRM4 Expression by Cancer Type",
+         x = "Cancer Type",
+         y = "Mean Expression (normalized counts)",
+         fill = "Gene")
   
-  # Save plot with high resolution
-  ggsave("./output/SRRM3_and_SRRM4_expressions_summary.pdf", 
-         plot = p,
-         width = 15, 
-         height = 8,
-         dpi = 300)
-  
-  # Save plot data
-  write.csv(plot_data, 
-            "./output/SRRM3_and_SRRM4_expressions_summary_data.csv", 
-            row.names = FALSE)
+  # Save plot
+  ggsave(sprintf("./output/SRRM3_and_SRRM4_expressions_%s.pdf", name_type),
+         p, width = 15, height = 8)
   
   return(p)
 }
 
-# Modified main analysis function with caching
+# Modified main_analysis function
 main_analysis <- function() {
   # Check for cached final results
   final_cache_file <- file.path(CACHE_DIR, "SRRM3_and_SRRM4_expressions_TCGA.rds")
@@ -298,26 +257,54 @@ main_analysis <- function() {
   projects <- get_tcga_projects()
   flog.info("Found %d TCGA projects", nrow(projects))
   
-  # Process each project with progress tracking
-  total_projects <- nrow(projects)
-  results <- lapply(seq_len(total_projects), function(i) {
-    flog.info("Processing project %d/%d", i, total_projects)
+  # Process each project
+  results <- lapply(seq_len(nrow(projects)), function(i) {
+    flog.info("Processing project %d/%d", i, nrow(projects))
     get_expression_data(projects[i,])
   })
   
-  # Analyze expression patterns
-  analysis_data <- analyze_expression_patterns(results)
+  # Combine all results
+  results <- do.call(rbind, results[!sapply(results, is.null)])
   
-  # Generate visualizations
-  # plot_expression_distributions(results)
-  # plot_correlation_matrix(analysis_data)
-  # plot_expression_summary(analysis_data)
+  if(is.null(results) || nrow(results) == 0) {
+    stop("No valid results to analyze")
+  }
   
-  # Save final results
+  # Calculate statistics for both naming schemes
+  analysis_data <- list(
+    short_names = results %>%
+      group_by(cancer_type_short) %>%
+      summarise(
+        srrm3_mean = mean(srrm3_expr, na.rm = TRUE),
+        srrm3_sd = sd(srrm3_expr, na.rm = TRUE),
+        srrm4_mean = mean(srrm4_expr, na.rm = TRUE),
+        srrm4_sd = sd(srrm4_expr, na.rm = TRUE),
+        correlation = cor(srrm3_expr, srrm4_expr, use = "pairwise.complete.obs"),
+        sample_size = n(),
+        .groups = "drop"
+      ) %>%
+      rename(cancer_type = cancer_type_short),
+    
+    full_names = results %>%
+      group_by(cancer_type_full) %>%
+      summarise(
+        srrm3_mean = mean(srrm3_expr, na.rm = TRUE),
+        srrm3_sd = sd(srrm3_expr, na.rm = TRUE),
+        srrm4_mean = mean(srrm4_expr, na.rm = TRUE),
+        srrm4_sd = sd(srrm4_expr, na.rm = TRUE),
+        correlation = cor(srrm3_expr, srrm4_expr, use = "pairwise.complete.obs"),
+        sample_size = n(),
+        .groups = "drop"
+      ) %>%
+      rename(cancer_type = cancer_type_full)
+  )
+  
+  # Save raw data and analysis results
   final_results <- list(
     raw_results = results,
     analysis_data = analysis_data
   )
+  
   save_cached_data(final_results, final_cache_file)
   
   return(final_results)
@@ -326,7 +313,9 @@ main_analysis <- function() {
 # Run the analysis with caching
 results <- main_analysis()
 
-plot_expression_summary(results$analysis_data)
+# Create plots with both naming schemes
+plot_short <- plot_expression_summary(results$analysis_data, use_full_names = FALSE)
+plot_full <- plot_expression_summary(results$analysis_data, use_full_names = TRUE)
 
 # plot_correlation_matrix(results$analysis_data)
 # plot_correlation_matrix <- function(analysis_data) {

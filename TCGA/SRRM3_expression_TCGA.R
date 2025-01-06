@@ -1,11 +1,10 @@
 ### Output #################################
-# "SRRM3_expression_TCGA.pdf"
-# "SRRM3_expression_TCGA.png"
-# "SRRM3_expression_TCGA.csv"
-# "SRRM3_expression_TCGA.rds"
+# "SRRM3_expression_TCGA_short_names.pdf"
+# "SRRM3_expression_TCGA_full_names.pdf"
+# "SRRM3_expression_TCGA_short_names.csv"
+# "SRRM3_expression_TCGA_full_names.csv"
 ###########################################
 
-# Analysis of total SRRM3 expression across cancer types
 library(recount3)
 library(GenomicRanges)
 library(dplyr)
@@ -20,246 +19,167 @@ library(scales)
 flog.appender(appender.file("./logs/SRRM3_expression_TCGA.log"))
 flog.threshold(DEBUG)
 
-# Define cache directory
-CACHE_DIR <- "../cache"
-if (!dir.exists(CACHE_DIR)) {
-  dir.create(CACHE_DIR)
-}
-
-# Function to get cached data
-get_cached_data <- function(cache_file) {
-  if (file.exists(cache_file)) {
-    flog.info("Loading cached data from %s", cache_file)
-    return(readRDS(cache_file))
+# Function to get expression data
+get_expression_data <- function(project_info) {
+  project_name <- project_info$project
+  cache_file <- file.path(CACHE_DIR, paste0("srrm3_expr_", project_name, ".rds"))
+  
+  # Check cache first
+  cached_data <- get_cached_data(cache_file)
+  if (!is.null(cached_data)) {
+    return(cached_data)
   }
-  return(NULL)
-}
-
-# Function to save cached data
-save_cached_data <- function(data, cache_file) {
-  flog.info("Saving data to cache: %s", cache_file)
-  saveRDS(data, cache_file)
-}
-
-# Define SRRM3 information
-SRRM3_INFO <- list(
-  gene = list(
-    name = "SRRM3",
-    chr = "chr7",
-    start = 76201896,
-    end = 76287287
-  )
-)
-
-# Function to get cancer type from project name
-get_cancer_type <- function(project_name) {
-  # Extract the cancer type code (e.g., "BRCA" from "TCGA-BRCA")
-  cancer_type <- sub("^TCGA-", "", project_name)
-  return(cancer_type)
-}
-
-# Function to create RSE object for gene expression
-create_rse_gene <- function(project_info) {
+  
+  flog.info("\nProcessing project: %s", project_name)
+  
   tryCatch({
     # Create RSE object
-    rse <- create_rse(
-      project_info,
-      type = "gene",
-      verbose = TRUE
-    )
+    rse_gene <- create_rse(subset(available_projects(), 
+                                 project == project_info$project & 
+                                   file_source == "tcga"), 
+                          type = "gene")
     
-    # Filter to SRRM3
-    rse_filtered <- rse[rowRanges(rse)$gene_name == "SRRM3", ]
+    # Get SRRM3 expression
+    srrm3_idx <- which(rowData(rse_gene)$gene_name == "SRRM3")
     
-    # Print available assay names for debugging
-    flog.info("Available assays: %s", paste(assayNames(rse_filtered), collapse = ", "))
-    
-    # Get the first available assay if 'counts' is not available
-    if (length(assayNames(rse_filtered)) > 0) {
-      assay_name <- assayNames(rse_filtered)[1]
-      flog.info("Using assay: %s", assay_name)
-      
-      # Get the data
-      assay_data <- assay(rse_filtered, assay_name)
-      
-      rm(rse)
-      gc()
-      
-      return(list(
-        rse = rse_filtered,
-        data = assay_data
-      ))
-    } else {
-      flog.error("No assays available in RSE object")
+    if(length(srrm3_idx) == 0) {
+      flog.warn("SRRM3 not found in %s", project_name)
       return(NULL)
     }
+    
+    # Extract expression data and clinical info
+    data <- data.frame(
+      sample_id = colnames(rse_gene),
+      srrm3_expr = assay(rse_gene)[srrm3_idx, ],
+      stringsAsFactors = FALSE
+    )
+    
+    # Add cancer type information
+    data$cancer_type_short <- sub("^TCGA-", "", project_info$project)
+    data$cancer_type_full <- NA
+    
+    # Get histological diagnosis from clinical data
+    clinical <- as.data.frame(colData(rse_gene))
+    if ("tcga.cgc_case_histological_diagnosis" %in% colnames(clinical)) {
+      hist_diag <- clinical$tcga.cgc_case_histological_diagnosis
+      if (!all(is.na(hist_diag))) {
+        data$cancer_type_full <- hist_diag
+      }
+    }
+    
+    # If no histological diagnosis available, use short name
+    data$cancer_type_full[is.na(data$cancer_type_full)] <- 
+      data$cancer_type_short[is.na(data$cancer_type_full)]
+    
+    # Cache the results
+    save_cached_data(data, cache_file)
+    
+    return(data)
   }, error = function(e) {
-    flog.error("Error creating RSE: %s", e$message)
+    flog.error("Error processing project %s: %s", project_name, e$message)
     return(NULL)
   })
 }
 
-# Main function to analyze cancer types
+# Function to analyze cancer types
 analyze_cancer_types <- function() {
-  # Check for cached results
-  cache_file <- file.path(CACHE_DIR, "SRRM3_expression_TCGA.rds")
-  cached_results <- get_cached_data(cache_file)
+  # Get TCGA projects
+  projects <- get_tcga_projects()
+  flog.info("Found %d TCGA projects", nrow(projects))
   
-  if (!is.null(cached_results)) {
-    flog.info("Using cached results")
-    return(cached_results)
+  # Process each project
+  results <- lapply(seq_len(nrow(projects)), function(i) {
+    flog.info("Processing project %d/%d", i, nrow(projects))
+    get_expression_data(projects[i,])
+  })
+  
+  # Combine all results
+  results <- do.call(rbind, results[!sapply(results, is.null)])
+  
+  if(is.null(results) || nrow(results) == 0) {
+    stop("No valid results to analyze")
   }
   
-  # Get available TCGA projects for human
-  projects <- available_projects(organism = "human")
-  
-  # Filter for TCGA projects only
-  tcga_projects <- projects[projects$file_source == "tcga", ]
-  
-  # Print available projects for debugging
-  flog.info("Found %d TCGA projects", nrow(tcga_projects))
-  
-  # Store results
-  results_list <- list()
-  
-  # Progress tracking
-  total_projects <- nrow(tcga_projects)
-  flog.info("Starting analysis of %d TCGA projects", total_projects)
-  
-  if(total_projects == 0) {
-    flog.error("No TCGA projects found")
-    return(NULL)
-  }
-  
-  for(i in 1:nrow(tcga_projects)) {
-    project_info <- tcga_projects[i,]
-    project_name <- project_info$project
-    cancer_type <- get_cancer_type(project_name)
+  # Calculate statistics for both naming schemes
+  analysis_data <- list(
+    short_names = results %>%
+      group_by(cancer_type_short) %>%
+      summarise(
+        mean_expr = mean(srrm3_expr, na.rm = TRUE),
+        sd_expr = sd(srrm3_expr, na.rm = TRUE),
+        sample_size = n(),
+        .groups = "drop"
+      ) %>%
+      rename(cancer_type = cancer_type_short),
     
-    # Check for cached project data
-    project_cache_file <- file.path(CACHE_DIR, paste0("SRRM3_TCGA_", project_name, ".rds"))
-    project_data <- get_cached_data(project_cache_file)
-    
-    if (!is.null(project_data)) {
-      results_list[[project_name]] <- project_data
-      flog.info("Loaded cached data for %s: %d samples", project_name, nrow(project_data))
-      next
-    }
-    
-    flog.info("==========================================")
-    flog.info("Processing project %d/%d: %s", i, total_projects, project_name)
-    
-    tryCatch({
-      rse_result <- create_rse_gene(project_info)
-      if(is.null(rse_result) || ncol(rse_result$rse) == 0 || nrow(rse_result$rse) == 0) {
-        flog.warn("Invalid RSE object for %s", project_name)
-        next
-      }
-      
-      # Get expression values and normalize to TPM
-      expression_values <- as.numeric(rse_result$data)
-      gene_length <- width(rowRanges(rse_result$rse))
-      tpm <- exp(log(expression_values) - log(gene_length) + log(1e6))
-      
-      # Store results
-      project_results <- data.frame(
-        cancer_type = cancer_type,
-        sample_id = colnames(rse_result$rse),
-        expression = tpm,
-        stringsAsFactors = FALSE
-      )
-      
-      # Cache project results
-      save_cached_data(project_results, project_cache_file)
-      
-      results_list[[project_name]] <- project_results
-      flog.info("Processed %s: %d samples", project_name, length(tpm))
-      
-    }, error = function(e) {
-      flog.error("Error processing %s: %s", project_name, e$message)
-    })
-  }
-  
-  if(length(results_list) == 0) {
-    flog.error("No results were generated - all projects failed processing")
-    return(NULL)
-  }
-  
-  all_results <- do.call(rbind, results_list)
-  
-  # Cache complete results
-  save_cached_data(all_results, cache_file)
-  
-  flog.info("Analysis complete: %d samples across %d cancer types", 
-            nrow(all_results), length(unique(all_results$cancer_type)))
-  
-  return(all_results)
-}
-
-# Function to plot cancer type distributions
-plot_cancer_distributions <- function(results) {
-  # Calculate summary statistics for cancer types with at least 10 samples
-  summary_stats <- results %>%
-    group_by(cancer_type) %>%
-    summarise(
-      median_expression = median(expression, na.rm = TRUE),
-      mean_expression = mean(expression, na.rm = TRUE),
-      sd_expression = sd(expression, na.rm = TRUE),
-      n_samples = n(),
-      .groups = "drop"
-    ) %>%
-    filter(n_samples >= 10)
-  
-  # Add sample size to cancer type labels
-  results$cancer_type_label <- paste0(
-    results$cancer_type, "\n(n=", 
-    summary_stats$n_samples[match(results$cancer_type, summary_stats$cancer_type)], 
-    ")"
+    full_names = results %>%
+      group_by(cancer_type_full) %>%
+      summarise(
+        mean_expr = mean(srrm3_expr, na.rm = TRUE),
+        sd_expr = sd(srrm3_expr, na.rm = TRUE),
+        sample_size = n(),
+        .groups = "drop"
+      ) %>%
+      rename(cancer_type = cancer_type_full)
   )
   
-  # Create violin plot with improved aesthetics
-  p1 <- ggplot(
-    results %>% filter(cancer_type %in% summary_stats$cancer_type),
-    aes(x = reorder(cancer_type_label, expression, FUN = median),
-        y = expression)
-  ) +
-    geom_violin(aes(fill = cancer_type), alpha = 0.7, scale = "width") +
-    geom_boxplot(width = 0.2, fill = "white", alpha = 0.7, outlier.size = 0.5) +
-    scale_fill_viridis(discrete = TRUE) +
-    scale_y_continuous(
-      trans = "log10",
-      labels = trans_format("log10", math_format(10^.x))
-    ) +
-    theme_minimal(base_size = 12) +
+  return(analysis_data)
+}
+
+# Function to plot cancer distributions
+plot_cancer_distributions <- function(analysis_data, use_full_names = FALSE) {
+  # Select appropriate data
+  data_to_plot <- if(use_full_names) analysis_data$full_names else analysis_data$short_names
+  name_type <- if(use_full_names) "full_names" else "short_names"
+  
+  if(is.null(data_to_plot) || nrow(data_to_plot) == 0) {
+    stop(sprintf("No data available for %s", name_type))
+  }
+  
+  # Calculate standard error
+  plot_data <- data_to_plot %>%
+    mutate(se = sd_expr / sqrt(sample_size))
+  
+  # Create plot
+  p1 <- ggplot(plot_data, 
+               aes(x = reorder(cancer_type, mean_expr), 
+                   y = mean_expr)) +
+    geom_bar(stat = "identity", fill = "#2166AC", alpha = 0.8) +
+    geom_errorbar(aes(ymin = mean_expr - se, 
+                      ymax = mean_expr + se),
+                  width = 0.25) +
+    theme_minimal() +
     theme(
-      axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
-      axis.text.y = element_text(size = 10),
-      axis.title = element_text(size = 12, face = "bold"),
-      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-      legend.position = "none",
-      panel.grid.major = element_line(color = "gray90"),
-      panel.grid.minor = element_line(color = "gray95")
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      plot.title = element_text(hjust = 0.5)
     ) +
     labs(
       title = "SRRM3 Expression Across Cancer Types",
-      subtitle = paste("Analysis of", length(unique(results$cancer_type)), "cancer types"),
       x = "Cancer Type",
-      y = "Expression (TPM)"
+      y = "Mean Expression (normalized counts)"
     )
   
-  # Save plot in high resolution
-  ggsave("./output/SRRM3_expression_TCGA.pdf", p1, width = 15, height = 10, dpi = 300)
-  ggsave("./output/SRRM3_expression_TCGA.png", p1, width = 15, height = 10, dpi = 300)
+  # Save plot
+  ggsave(sprintf("./output/SRRM3_expression_TCGA_%s.pdf", name_type), 
+         p1, width = 15, height = 10, dpi = 300)
+  ggsave(sprintf("./output/SRRM3_expression_TCGA_%s.png", name_type), 
+         p1, width = 15, height = 10, dpi = 300)
   
   return(p1)
 }
 
-# Run analysis
+# Main execution
 results <- analyze_cancer_types()
 if(!is.null(results)) {
-  plot <- plot_cancer_distributions(results)
-  print(plot)
+  # Create plots with both naming schemes
+  plot_short <- plot_cancer_distributions(results, use_full_names = FALSE)
+  plot_full <- plot_cancer_distributions(results, use_full_names = TRUE)
   
   # Save results
-  write.csv(results, "./output/SRRM3_expression_TCGA.csv", row.names = FALSE)
+  write.csv(results$short_names, 
+            "./output/SRRM3_expression_TCGA_short_names.csv", 
+            row.names = FALSE)
+  write.csv(results$full_names, 
+            "./output/SRRM3_expression_TCGA_full_names.csv", 
+            row.names = FALSE)
 }

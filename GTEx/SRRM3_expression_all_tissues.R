@@ -1,6 +1,7 @@
 ### Output #################################
-# "SRRM3_total_expression_GTEx_tissues.pdf"
-# "SRRM3_total_expression_GTEx_results.csv"
+# "SRRM3_expression_all_tissues.pdf"
+# "SRRM3_expression_all_tissues.png"
+# "SRRM3_expression_all_tissues.csv"
 ###########################################
 
 # Analysis of total SRRM3 expression across GTEx tissues
@@ -15,7 +16,7 @@ library(viridis)
 library(scales)
 
 # Set up logging
-flog.appender(appender.file("./logs/SRRM3_total_expression_GTEx.log"))
+flog.appender(appender.file("./logs/SRRM3_expression_all_tissues.log"))
 flog.threshold(DEBUG)
 
 # Define cache directory
@@ -128,7 +129,7 @@ create_rse_gene <- function(project_info) {
 # Main function to analyze GTEx tissues
 analyze_gtex_tissues <- function() {
   # Check for cached results
-  cache_file <- file.path(CACHE_DIR, "SRRM3_total_expression_GTEx_results.rds")
+  cache_file <- file.path(CACHE_DIR, "SRRM3_expression_all_tissues.rds")
   cached_results <- get_cached_data(cache_file)
   
   if (!is.null(cached_results)) {
@@ -218,13 +219,14 @@ plot_tissue_distributions <- function(results) {
     ")"
   )
   
-  # Create violin plot with improved aesthetics
+  # Create violin plot
   p1 <- ggplot(
     results %>% filter(tissue_type %in% summary_stats$tissue_type),
     aes(x = reorder(tissue_label, expression, FUN = median),
-        y = expression)
+        y = expression,
+        fill = tissue_type)
   ) +
-    geom_violin(aes(fill = tissue_type), alpha = 0.7, scale = "width") +
+    geom_violin(alpha = 0.7, scale = "width") +
     geom_boxplot(width = 0.2, fill = "white", alpha = 0.7, outlier.size = 0.5) +
     scale_fill_viridis(discrete = TRUE) +
     scale_y_continuous(
@@ -248,11 +250,48 @@ plot_tissue_distributions <- function(results) {
       y = "Expression (TPM)"
     )
   
-  # Save plot in high resolution
-  ggsave("./output/SRRM3_total_expression_GTEx_tissues.pdf", p1, width = 25, height = 10, dpi = 300)
-  ggsave("./output/SRRM3_total_expression_GTEx_tissues.png", p1, width = 25, height = 10, dpi = 300)
+  # Create means plot
+  p2 <- ggplot(summary_stats,
+               aes(x = reorder(tissue_type, mean_expression),
+                   y = mean_expression,
+                   color = tissue_type)) +
+    geom_point(size = 3) +
+    geom_errorbar(aes(ymin = mean_expression - sd_expression,
+                      ymax = mean_expression + sd_expression),
+                  width = 0.2) +
+    scale_color_viridis(discrete = TRUE) +
+    scale_y_continuous(
+      trans = "log10",
+      labels = trans_format("log10", math_format(10^.x))
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+      axis.text.y = element_text(size = 10),
+      axis.title = element_text(size = 12, face = "bold"),
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      legend.position = "none",
+      panel.grid.major = element_line(color = "gray90"),
+      panel.grid.minor = element_line(color = "gray95")
+    ) +
+    labs(
+      title = "Mean SRRM3 Expression by Tissue Type",
+      x = "Tissue Type",
+      y = "Mean Expression (TPM)"
+    )
   
-  return(p1)
+  # Save outputs with consistent dimensions
+  tryCatch({
+    ggsave("./output/SRRM3_expression_all_tissues_violin.pdf", p1, width = 15, height = 8)
+    ggsave("./output/SRRM3_expression_all_tissues_violin.png", p1, width = 15, height = 8)
+    ggsave("./output/SRRM3_expression_all_tissues_means.pdf", p2, width = 15, height = 8)
+    ggsave("./output/SRRM3_expression_all_tissues_means.png", p2, width = 15, height = 8)
+    write.csv(results, "./output/SRRM3_expression_all_tissues.csv", row.names = FALSE)
+  }, error = function(e) {
+    flog.error("Error saving outputs: %s", e$message)
+  })
+  
+  return(list(violin = p1, means = p2))
 }
 
 # Run analysis
@@ -262,5 +301,5 @@ if(!is.null(results)) {
   print(plot)
   
   # Save results
-  write.csv(results, "./output/SRRM3_total_expression_GTEx_results.csv", row.names = FALSE)
+  write.csv(results, "./output/SRRM3_expression_all_tissues.csv", row.names = FALSE)
 } 

@@ -38,3 +38,4 @@ cache/
 .Rhistory
 **/log/
 GTEx_vs_TCGA/.Rhistory
+TCGA/GDCdata/

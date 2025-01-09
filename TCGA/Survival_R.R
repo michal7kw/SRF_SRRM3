@@ -9,6 +9,25 @@ library(SummarizedExperiment)
 library(tidyverse)
 library(DESeq2)
 
+# Add after library imports:
+if (!dir.exists("cache")) {
+  dir.create("cache")
+}
+
+# Add utility functions
+get_cached_data <- function(cache_file) {
+  if (file.exists(cache_file)) {
+    message("Loading cached data from: ", cache_file)
+    return(readRDS(cache_file))
+  }
+  return(NULL)
+}
+
+save_cached_data <- function(data, cache_file) {
+  message("Saving data to cache: ", cache_file)
+  saveRDS(data, cache_file)
+}
+
 # getting clinical data for TCGA-BRCA cohort -------------------
 clinical_brca <- GDCquery_clinic("TCGA-BRCA")
 any(colnames(clinical_brca) %in% c("vital_status", "days_to_last_follow_up", "days_to_death"))
@@ -56,21 +75,25 @@ tumor <- output_brca[output_brca$sample_type == "Primary Tumor", "cases"][1:20]
 tumor
 
 # # get gene expression data from 20 primary tumors 
-query_brca <- GDCquery(
-  project = "TCGA-BRCA",
-  data.category = "Transcriptome Profiling", # parameter enforced by GDCquery
-  experimental.strategy = "RNA-Seq",
-  workflow.type = "STAR - Counts",
-  data.type = "Gene Expression Quantification",
-  sample.type = c("Primary Tumor", "Solid Tissue Normal"),
-  access = "open",
-  barcode = tumor)
+cache_file <- file.path("cache", "brca_expression_data.rds")
+tcga_brca_data <- get_cached_data(cache_file)
 
-# download data
-GDCdownload(query_brca)
+if (is.null(tcga_brca_data)) {
+  query_brca <- GDCquery(
+    project = "TCGA-BRCA",
+    data.category = "Transcriptome Profiling",
+    experimental.strategy = "RNA-Seq",
+    workflow.type = "STAR - Counts",
+    data.type = "Gene Expression Quantification",
+    sample.type = c("Primary Tumor", "Solid Tissue Normal"),
+    access = "open",
+    barcode = tumor)
+  
+  GDCdownload(query_brca)
+  tcga_brca_data <- GDCprepare(query_brca, summarizedExperiment = TRUE)
+  save_cached_data(tcga_brca_data, cache_file)
+}
 
-# get counts
-tcga_brca_data <- GDCprepare(query_brca, summarizedExperiment = TRUE)
 brca_matrix <- assay(tcga_brca_data, "unstranded")
 brca_matrix[1:10,1:10]
 

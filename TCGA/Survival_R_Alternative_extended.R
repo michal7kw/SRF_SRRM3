@@ -53,24 +53,75 @@ debug_available_projects <- function() {
   return(projects)
 }
 
-# Simplify find_tcga_project function
+# Modify find_tcga_project function to handle TCGA's specific format
 find_tcga_project <- function(cancer_type) {
+  message("Getting available projects...")
   projects <- available_projects()
   
-  # Try just the cancer type code (e.g., "BRCA", "LUAD", etc.)
-  project_info <- subset(projects, project == cancer_type)
+  # Debug output
+  message("\nSearching for cancer type: ", cancer_type)
+  message("Total number of projects: ", nrow(projects))
   
-  if (nrow(project_info) == 1) {
-    message("Found project: ", project_info$project)
-    return(project_info)
+  # First look for TCGA projects specifically
+  tcga_projects <- subset(projects, 
+                         file_source == "tcga" & 
+                         project_type == "data_sources")
+  
+  message("\nFound ", nrow(tcga_projects), " TCGA projects")
+  
+  if (nrow(tcga_projects) > 0) {
+    message("\nSample of TCGA projects:")
+    print(head(tcga_projects))
+    
+    # Look for exact match first
+    exact_match <- subset(tcga_projects, project == cancer_type)
+    if (nrow(exact_match) == 1) {
+      message("\nFound exact match:")
+      print(exact_match)
+      return(exact_match)
+    }
+    
+    # If no exact match, try case-insensitive search
+    matches <- tcga_projects[grep(cancer_type, tcga_projects$project, ignore.case = TRUE), ]
+    if (nrow(matches) > 0) {
+      message("\nFound matching project:")
+      print(matches[1, ])
+      return(matches[1, ])
+    }
   }
   
-  # If not found, show available projects for debugging
-  message("\nAll available projects:")
-  print(head(projects))
+  # If no match found, show what's available
+  message("\nNo match found. Available TCGA projects:")
+  print(head(tcga_projects, n = 10))
   
-  stop("Could not find project for ", cancer_type, 
-       ". Please use the cancer type code directly (e.g., 'BRCA' for breast cancer)")
+  stop(paste("Could not find TCGA project for", cancer_type, 
+             ". Please check the project list above and verify the correct project name."))
+}
+
+# Add a helper function to explore available projects
+explore_projects <- function() {
+  projects <- available_projects()
+  
+  message("Total number of projects: ", nrow(projects))
+  
+  # Look for TCGA projects
+  tcga_projects <- projects[grep("tcga", projects$project, ignore.case = TRUE), ]
+  message("\nTCGA projects found: ", nrow(tcga_projects))
+  
+  if (nrow(tcga_projects) > 0) {
+    message("\nSample of TCGA projects:")
+    print(head(tcga_projects))
+    
+    # Try to identify the pattern used for TCGA projects
+    message("\nUnique TCGA project patterns:")
+    patterns <- unique(gsub("[A-Z]+$", "", tcga_projects$project))
+    print(patterns)
+  }
+  
+  return(list(
+    all_projects = projects,
+    tcga_projects = tcga_projects
+  ))
 }
 
 # Define SRRM3 information
@@ -122,35 +173,85 @@ find_exon15_junctions <- function(jxn_coords) {
   ))
 }
 
-# Function to calculate PSI values
+# Add a new function to process junction data in chunks
+process_junction_data <- function(rse, chunk_size = 1000) {
+  message("Processing junction data in chunks...")
+  
+  total_features <- nrow(rse)
+  total_chunks <- ceiling(total_features / chunk_size)
+  
+  pb <- progress_bar$new(
+    format = "Processing chunk :current/:total [:bar] :percent eta: :eta",
+    total = total_chunks
+  )
+  
+  processed_data <- list()
+  
+  for (i in seq(1, total_features, by = chunk_size)) {
+    chunk_end <- min(i + chunk_size - 1, total_features)
+    chunk <- rse[i:chunk_end, ]
+    
+    # Process chunk here
+    jxn_coords <- rowRanges(chunk)
+    junctions <- find_exon15_junctions(jxn_coords)
+    
+    if (length(junctions$inclusion) > 0 || length(junctions$exclusion) > 0) {
+      processed_data[[length(processed_data) + 1]] <- list(
+        coords = jxn_coords,
+        junctions = junctions
+      )
+    }
+    
+    pb$tick()
+  }
+  
+  return(processed_data)
+}
+
+# Modify calculate_psi_values to use chunked processing
 calculate_psi_values <- function(rse) {
   if(is.null(rse)) return(NULL)
   
-  # Get junction counts
-  junction_counts <- assay(rse)
-  jxn_coords <- rowRanges(rse)
+  message("Starting PSI calculation...")
   
-  # Find relevant junctions
-  junctions <- find_exon15_junctions(jxn_coords)
+  # Process data in chunks
+  processed_chunks <- process_junction_data(rse)
   
-  if(length(junctions$inclusion) == 0 || length(junctions$exclusion) == 0) {
+  if (length(processed_chunks) == 0) {
+    message("No relevant junctions found")
     return(NULL)
   }
   
-  # Calculate PSI for each sample
+  # Combine results from all chunks
+  all_inclusion <- unique(unlist(lapply(processed_chunks, function(x) x$junctions$inclusion)))
+  all_exclusion <- unique(unlist(lapply(processed_chunks, function(x) x$junctions$exclusion)))
+  
+  message("Calculating PSI values for ", ncol(rse), " samples...")
+  
+  # Get junction counts
+  junction_counts <- assay(rse)
+  
+  # Calculate PSI for each sample with progress bar
+  pb <- progress_bar$new(
+    format = "Calculating PSI :current/:total [:bar] :percent eta: :eta",
+    total = ncol(junction_counts)
+  )
+  
   psi_values <- sapply(seq_len(ncol(junction_counts)), function(i) {
-    inclusion_reads <- sum(junction_counts[junctions$inclusion, i])
-    exclusion_reads <- sum(junction_counts[junctions$exclusion, i])
+    inclusion_reads <- sum(junction_counts[all_inclusion, i])
+    exclusion_reads <- sum(junction_counts[all_exclusion, i])
     total_reads <- inclusion_reads + exclusion_reads
     
+    pb$tick()
+    
     if(total_reads >= 10) {  # Minimum coverage threshold
-      psi <- (inclusion_reads / total_reads) * 100
-      return(psi)
+      return((inclusion_reads / total_reads) * 100)
     } else {
       return(NA)
     }
   })
   
+  message("PSI calculation complete")
   return(psi_values)
 }
 
@@ -294,14 +395,28 @@ create_advanced_plots <- function(data, survival_fit, stats_results) {
   ))
 }
 
-# Enhanced main analysis function
+# Add a helper function to retry downloads
+retry_download <- function(url, destfile, max_tries = 3) {
+  for (i in 1:max_tries) {
+    tryCatch({
+      download.file(url, destfile, quiet = TRUE)
+      return(TRUE)
+    }, error = function(e) {
+      message("Download attempt ", i, " failed: ", e$message)
+      if (i == max_tries) stop("Maximum retry attempts reached")
+      Sys.sleep(2^i)  # Exponential backoff
+    })
+  }
+}
+
+# Modify perform_enhanced_survival_analysis to handle the RSE creation more carefully
 perform_enhanced_survival_analysis <- function(cancer_type, 
-                                               analysis_type = "expression",
-                                               gene = "SRRM3",
-                                               grouping_method = "quartile",
-                                               min_coverage = 10,
-                                               min_quality = 20,
-                                               min_samples_per_group = 30) {
+                                             analysis_type = "expression",
+                                             gene = "SRRM3",
+                                             grouping_method = "quartile",
+                                             min_coverage = 10,
+                                             min_quality = 20,
+                                             min_samples_per_group = 30) {
   # Create cache filename based on parameters
   cache_file <- file.path("cache", 
                          paste0("survival_analysis_", cancer_type, "_", 
@@ -313,27 +428,46 @@ perform_enhanced_survival_analysis <- function(cancer_type,
     return(cached_results)
   }
   
-  # Get and process data (PSI or expression)
   if(analysis_type == "PSI") {
     # Cache for recount3 data
     recount3_cache <- file.path("cache", paste0("recount3_", cancer_type, ".rds"))
     rse <- get_cached_data(recount3_cache)
     
     if (is.null(rse)) {
-      # Use the new function to find the project
-      project_info <- find_tcga_project(cancer_type)
-      
-      message("Creating RSE object for ", project_info$project)
-      rse <- create_rse(
-        project_info[1, ],
-        type = "jxn",
-        jxn_format = "UNIQUE",
-        verbose = TRUE
-      )
-      save_cached_data(rse, recount3_cache)
+      tryCatch({
+        # Use the modified find_tcga_project function
+        project_info <- find_tcga_project(cancer_type)
+        
+        message("Creating RSE object for ", project_info$project)
+        message("Project info:")
+        print(project_info)
+        
+        # Create RSE with correct parameters
+        rse <- create_rse(
+          project = project_info,
+          type = "jxn",
+          jxn_format = "UNIQUE",
+          verbose = TRUE
+        )
+        
+        if (is.null(rse)) {
+          stop("Failed to create RSE object")
+        }
+        
+        save_cached_data(rse, recount3_cache)
+      }, error = function(e) {
+        message("Error creating RSE object: ", e$message)
+        message("\nAttempting to get more information about the error...")
+        message("Available arguments for create_rse:")
+        print(args(create_rse))
+        message("\nProject search details:")
+        print(explore_projects())
+        stop(e)
+      })
     }
     
-    # [Previous PSI calculation code]
+    # Continue with PSI calculation
+    message("Calculating PSI values...")
     psi_values <- calculate_psi_values(rse)
     values <- filter_psi_data(rse, psi_values, min_coverage, min_quality, min_samples_per_group)
     value_type <- "PSI"

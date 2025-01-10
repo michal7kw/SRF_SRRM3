@@ -16,6 +16,25 @@ if (!dir.exists("cache")) {
   dir.create("cache")
 }
 
+clear_cache <- function(cancer_type = NULL, gene = NULL) {
+  if (!is.null(cancer_type) && !is.null(gene)) {
+    # Remove specific cache file
+    cache_file <- file.path("cache", paste0("expression_data_", cancer_type, "_", gene, ".rds"))
+    if (file.exists(cache_file)) {
+      unlink(cache_file)
+      message("Removed cache file: ", cache_file)
+    }
+  } else {
+    # Remove all cache files
+    if (dir.exists("cache")) {
+      unlink("cache/*")
+      message("Cleared all cache files")
+    }
+  }
+}
+
+# clear_cache("BRCA", "SRRM3")
+
 # Add this helper function at the top
 find_tcga_project <- function(cancer_type) {
   message("Getting available projects...")
@@ -60,26 +79,50 @@ get_clinical_data <- function(cancer_type) {
                                 days_to_death)
     )
   
+  # Add debug information
+  message(sprintf("Clinical data has %d patients", nrow(clinical)))
+  message("Sample of clinical data case IDs:")
+  print(head(clinical$submitter_id))
+  
   return(clinical)
 }
 
-# Function to get expression data - use the proven approach from SRRM3_and_SRRM4_expressions.R
+# Function to get expression data
 get_expression_data <- function(cancer_type, gene_name) {
   cache_file <- file.path("cache", paste0("expression_data_", cancer_type, "_", gene_name, ".rds"))
   
   if (file.exists(cache_file)) {
     message("Loading cached expression data...")
-    return(readRDS(cache_file))
+    cached_data <- readRDS(cache_file)
+    # Verify the cached data has proper TCGA IDs
+    if (!grepl("^TCGA-", cached_data$case_id[1])) {
+      message("Cached data has incorrect ID format. Regenerating...")
+      unlink(cache_file)
+    } else {
+      return(cached_data)
+    }
   }
   
   message("Getting expression data from recount3...")
-  project_info <- find_tcga_project(cancer_type)
+  projects <- available_projects()
+  
+  # Make sure we get exactly one project
+  project_info <- subset(projects, 
+                        project == toupper(cancer_type) &
+                        file_source == "tcga" &
+                        project_type == "data_sources")
+  
+  if (nrow(project_info) != 1) {
+    message("\nAvailable TCGA projects:")
+    print(subset(projects, file_source == "tcga" & project_type == "data_sources"))
+    stop("Could not find unique project for ", cancer_type)
+  }
   
   message("Creating RSE object...")
-  # Create RSE object according to recount3 documentation
   rse_gene <- create_rse(
-    project_info[1,],
-    type = "gene"  # Only specify required parameters
+    project_info[1, ],
+    type = "gene",
+    verbose = TRUE
   )
   
   # Get gene expression
@@ -88,15 +131,27 @@ get_expression_data <- function(cancer_type, gene_name) {
     stop(paste("Gene", gene_name, "not found in dataset"))
   }
   
+  # Get the TCGA barcodes from tcga.tcga_barcode column
+  tcga_barcodes <- colData(rse_gene)$tcga.tcga_barcode
+  if (is.null(tcga_barcodes)) {
+    message("Available colData columns:")
+    print(colnames(colData(rse_gene)))
+    stop("Could not find tcga.tcga_barcode in the data")
+  }
+  
   # Create data frame with expression data
   gene_data <- data.frame(
-    case_id = colnames(rse_gene),
+    case_id = tcga_barcodes,
     counts = assay(rse_gene)[gene_idx, ],
     stringsAsFactors = FALSE
   )
   
-  # Clean case IDs
+  # Clean case IDs - make sure they match TCGA format (TCGA-XX-XXXX)
   gene_data$case_id <- substr(gene_data$case_id, 1, 12)
+  
+  # Add debug information
+  message("Sample of expression data case IDs after cleaning:")
+  print(head(gene_data$case_id))
   
   # Cache results
   saveRDS(gene_data, cache_file)
@@ -159,7 +214,7 @@ query_gdc_with_retry <- function(cancer_type, data_type) {
   }
 }
 
-# Function to calculate PSI values - directly copied from working implementation
+# Function to calculate PSI values
 calculate_psi_values <- function(cancer_type) {
   cache_file <- file.path("cache", paste0("psi_values_", cancer_type, ".rds"))
   
@@ -186,24 +241,26 @@ calculate_psi_values <- function(cancer_type) {
   message("Getting junction data from recount3...")
   projects <- available_projects()
   
-  # Get project info - using the working approach from PSI_values_full_names.R
+  # Make sure we get exactly one project - match the project name directly
   project_info <- subset(projects, 
-                        file_source == "tcga" & 
-                        project_type == "data_sources" &
-                        grepl(tolower(cancer_type), tolower(project)))
+                        project == toupper(cancer_type) &  # Projects are in uppercase (BRCA)
+                        file_source == "tcga" &
+                        project_type == "data_sources")
   
-  if (nrow(project_info) == 0) {
-    stop(paste("No project found for", cancer_type))
+  if (nrow(project_info) != 1) {
+    message("\nAvailable TCGA projects:")
+    print(subset(projects, file_source == "tcga" & project_type == "data_sources"))
+    stop("Could not find unique project for ", cancer_type)
   }
   
   message(sprintf("Found project: %s", project_info$project[1]))
   
-  # Create RSE object using the working parameters
+  # Create RSE object with correct parameters from working implementation
   rse <- create_rse(
-    project_info[1,],
+    project_info[1, ],  # Ensure single row
     type = "jxn",
     jxn_format = "UNIQUE",
-    organism = "human"
+    verbose = TRUE
   )
   
   # Get junction data
@@ -239,9 +296,9 @@ calculate_psi_values <- function(cancer_type) {
   message(sprintf("Found %d inclusion and %d exclusion junctions", 
                  length(inclusion_jxns), length(exclusion_jxns)))
   
-  # Calculate PSI values
+  # Calculate PSI values with correct IDs
   psi_values <- data.frame(
-    case_id = colnames(rse),
+    case_id = colData(rse)$tcga.tcga_barcode,  # Use tcga.tcga_barcode instead of external_id
     psi = sapply(seq_len(ncol(junction_counts)), function(i) {
       inclusion_reads <- sum(junction_counts[inclusion_jxns, i])
       exclusion_reads <- sum(junction_counts[exclusion_jxns, i])
@@ -255,7 +312,7 @@ calculate_psi_values <- function(cancer_type) {
     })
   )
   
-  # Clean case IDs
+  # Clean case IDs to match TCGA format
   psi_values$case_id <- substr(psi_values$case_id, 1, 12)
   
   message("Caching PSI values...")
@@ -323,16 +380,68 @@ perform_survival_analysis <- function(cancer_type, analysis_type = "expression",
   message("Strata distribution:")
   print(strata_counts)
   
+  # Merge with clinical data - add debugging
+  message("\nBefore merging:")
+  message("Clinical data dimensions: ", nrow(clinical_data), " x ", ncol(clinical_data))
+  message("Analysis data dimensions: ", nrow(analysis_data), " x ", ncol(analysis_data))
+  message("\nSample clinical IDs:")
+  print(head(clinical_data$submitter_id))
+  message("\nSample analysis IDs:")
+  print(head(analysis_data$case_id))
+  
+  # Make sure case IDs are in the same format
+  clinical_data$submitter_id <- substr(clinical_data$submitter_id, 1, 12)
+  analysis_data$case_id <- substr(analysis_data$case_id, 1, 12)
+  
   # Merge with clinical data
   message("Merging with clinical data...")
   merged_data <- merge(analysis_data, clinical_data, 
-                      by.x = 'case_id', by.y = 'submitter_id')
+                      by.x = 'case_id', by.y = 'submitter_id',
+                      all = FALSE)  # Only keep matching cases
   
   message(sprintf("Final merged dataset has %d patients", nrow(merged_data)))
+  
+  if (nrow(merged_data) == 0) {
+    stop("No matching patients found after merging clinical and expression data!")
+  }
   
   # Create survival object and fit
   message("Fitting survival model...")
   fit <- survfit(Surv(overall_survival, deceased) ~ strata, data = merged_data)
+  
+  # Add summary statistics calculation
+  message("Calculating group statistics...")
+  group_stats <- merged_data %>%
+    group_by(strata) %>%
+    summarise(
+      mean_val = mean(!!sym(value_col), na.rm = TRUE),
+      median_val = median(!!sym(value_col), na.rm = TRUE),
+      sd_val = sd(!!sym(value_col), na.rm = TRUE),
+      min_val = min(!!sym(value_col), na.rm = TRUE),
+      max_val = max(!!sym(value_col), na.rm = TRUE),
+      .groups = 'drop'
+    )
+  
+  # Create subtitle with ranges
+  subtitle <- paste(
+    sapply(1:nrow(group_stats), function(i) {
+      group <- group_stats$strata[i]
+      if(analysis_type == "PSI") {
+        sprintf("%s: PSI %.1f-%.1f%% (median: %.1f%%)",
+                group,
+                group_stats$min_val[i],
+                group_stats$max_val[i],
+                group_stats$median_val[i])
+      } else {
+        sprintf("%s: Expr %.1f-%.1f (median: %.1f)",
+                group,
+                group_stats$min_val[i],
+                group_stats$max_val[i],
+                group_stats$median_val[i])
+      }
+    }),
+    collapse = "\n"
+  )
   
   # Create plot
   message("Creating survival plot...")
@@ -345,8 +454,11 @@ perform_survival_analysis <- function(cancer_type, analysis_type = "expression",
     xlab = "Time (days)",
     ylab = "Overall Survival Probability",
     title = paste(gene, analysis_type, "Survival Analysis"),
+    subtitle = subtitle,  # Add the subtitle with ranges
     legend.title = paste(analysis_type, "Level"),
-    palette = c("HIGH" = "#E7B800", "LOW" = "#2E9FDF", "INTERMEDIATE" = "#868686")
+    palette = c("HIGH" = "#E7B800", "LOW" = "#2E9FDF", "INTERMEDIATE" = "#868686"),
+    font.subtitle = c(10, "plain"),  # Adjust subtitle font size
+    break.time.by = 365  # Break x-axis by years
   )
   
   # Perform statistical tests
@@ -361,11 +473,11 @@ perform_survival_analysis <- function(cancer_type, analysis_type = "expression",
     fit = fit,
     data = merged_data,
     logrank = logrank_test,
-    cox = cox_model
+    cox = cox_model,
+    group_stats = group_stats  # Add group statistics to returned results
   ))
 }
 
-# Example usage:
 # For SRRM3 expression analysis:
 results_exp <- perform_survival_analysis("BRCA", "expression", "SRRM3", "median")
 results_exp$plot
@@ -380,5 +492,104 @@ results_psi$plot
 # For SRRM4 expression analysis:
 results_srrm4 <- perform_survival_analysis("BRCA", "expression", "SRRM4", "median")
 results_srrm4$plot
-results_srrm4$plot
 
+# Create results directory if it doesn't exist
+if (!dir.exists("results_ext")) {
+  dir.create("results_ext")
+}
+
+# Function to safely save plot to PDF
+save_plot_to_pdf <- function(plot, filename, width = 10, height = 8) {
+  pdf(filename, width = width, height = height, onefile = TRUE)
+  tryCatch({
+    print(plot)
+  }, finally = {
+    dev.off()  # Ensure device is closed even if there's an error
+  })
+}
+
+# Save SRRM3 expression plot
+if (!is.null(results_exp)) {
+  save_plot_to_pdf(
+    results_exp$plot,
+    file.path("results_ext", "BRCA_SRRM3_expression_survival.pdf")
+  )
+  saveRDS(results_exp, file.path("results_ext", "BRCA_SRRM3_expression_results.rds"))
+}
+
+# Save SRRM3 PSI plot
+if (!is.null(results_psi)) {
+  save_plot_to_pdf(
+    results_psi$plot,
+    file.path("results_ext", "BRCA_SRRM3_PSI_survival.pdf")
+  )
+  saveRDS(results_psi, file.path("results_ext", "BRCA_SRRM3_PSI_results.rds"))
+}
+
+# Save SRRM4 expression plot
+if (!is.null(results_srrm4)) {
+  save_plot_to_pdf(
+    results_srrm4$plot,
+    file.path("results_ext", "BRCA_SRRM4_expression_survival.pdf")
+  )
+  saveRDS(results_srrm4, file.path("results_ext", "BRCA_SRRM4_expression_results.rds"))
+}
+
+message("All plots and results have been saved to the results_ext directory")
+
+# Function to safely save plot to PNG
+save_plot_to_png <- function(plot, filename, width = 10, height = 8) {
+  tryCatch({
+    png(filename, width = width*100, height = height*100, res = 100)
+    print(plot)
+    dev.off()
+    message("Successfully saved plot to: ", filename)
+  }, error = function(e) {
+    warning("Failed to save plot to ", filename, ": ", e$message)
+  })
+}
+
+# Save SRRM3 expression results
+if (!is.null(results_exp)) {
+  message("\nSaving SRRM3 expression analysis results...")
+  save_plot_to_png(
+    results_exp$plot,
+    file.path("results_ext", "BRCA_SRRM3_expression_survival.png")
+  )
+}
+
+# Save SRRM3 PSI results
+if (!is.null(results_psi)) {
+  message("\nSaving SRRM3 PSI analysis results...")
+  save_plot_to_png(
+    results_psi$plot,
+    file.path("results_ext", "BRCA_SRRM3_PSI_survival.png")
+  )
+}
+
+# Save SRRM4 expression results
+if (!is.null(results_srrm4)) {
+  message("\nSaving SRRM4 expression analysis results...")
+  save_plot_to_png(
+    results_srrm4$plot,
+    file.path("results_ext", "BRCA_SRRM4_expression_survival.png")
+  )
+}
+
+message("\nAll plots have been saved to the results_ext directory")
+
+# Function to print summary of saved files
+print_saved_files_summary <- function() {
+  files <- list.files("results_ext", pattern = "\\.png$", full.names = TRUE)
+  if (length(files) > 0) {
+    message("\nSaved files:")
+    for (file in files) {
+      message("- ", basename(file))
+    }
+  } else {
+    message("\nNo files were saved in the results_ext directory")
+  }
+}
+
+# Print summary of saved files
+print_saved_files_summary()

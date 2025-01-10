@@ -11,7 +11,7 @@ library(futile.logger)
 library(R.utils)
 library(viridis)
 library(mclust)      # For mixture modeling
-library(timeROC)     # For time-dependent ROC
+# library(timeROC)     # For time-dependent ROC
 library(plotly)      # For interactive plots
 library(cmprsk)      # For competing risks
 library(rms)         # For advanced survival modeling
@@ -356,15 +356,15 @@ create_advanced_plots <- function(data, survival_fit, stats_results) {
   )
   
   # Time-dependent ROC curve
-  roc_obj <- timeROC(
-    T = data$survival_time,
-    delta = data$status,
-    marker = data$predictor_value,
-    cause = 1,
-    times = c(365, 730, 1095)  # 1, 2, and 3 years
-  )
+  # roc_obj <- timeROC(
+  #   T = data$survival_time,
+  #   delta = data$status,
+  #   marker = data$predictor_value,
+  #   cause = 1,
+  #   times = c(365, 730, 1095)  # 1, 2, and 3 years
+  # )
   
-  roc_plot <- plot(roc_obj)
+  # roc_plot <- plot(roc_obj)
   
   # Forest plot for multivariate analysis
   forest_data <- data.frame(
@@ -389,7 +389,7 @@ create_advanced_plots <- function(data, survival_fit, stats_results) {
   
   return(list(
     survival = surv_plot,
-    roc = roc_plot,
+    # roc = roc_plot,
     forest = forest_plot,
     waterfall = waterfall_plot
   ))

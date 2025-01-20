@@ -532,28 +532,14 @@ perform_enhanced_survival_analysis <- function(cancer_type,
   return(results)
 }
 
-# Example usage:
+# Comment out the example execution
 # results <- perform_enhanced_survival_analysis(
 #   cancer_type = "BRCA",
 #   analysis_type = "PSI",
-#   grouping_method = "quartile",
-#   min_coverage = 10,
-#   min_quality = 20,
-#   min_samples_per_group = 30
+#   grouping_method = "quartile"
 # )
-#
-# # Access results
-# results$plots$survival  # View survival plot
-# results$statistics$multivariate  # View multivariate analysis results
-# results$cross_validation  # View cross-validation results
 
-results <- perform_enhanced_survival_analysis(
-  cancer_type = "BRCA",
-  analysis_type = "PSI",
-  grouping_method = "quartile"
-)
-
-# View specific results
-results$plots$survival  # Survival curves
-results$statistics$multivariate  # Multivariate analysis
-results$plots$forest  # Forest plot of hazard ratios
+# # View specific results
+# results$plots$survival  # Survival curves
+# results$statistics$multivariate  # Multivariate analysis
+# results$plots$forest  # Forest plot of hazard ratios

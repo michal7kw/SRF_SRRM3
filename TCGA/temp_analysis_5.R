@@ -13,26 +13,26 @@ if (!dir.exists("results")) dir.create("results", recursive = TRUE)
 if (!dir.exists("cache")) dir.create("cache", recursive = TRUE)
 
 # Print analysis info
-cat(sprintf("\nStarting analysis for %s\n", "UVM"))
+cat(sprintf("\nStarting analysis for %s\n", "GBM"))
 
 # Run analysis with error handling
 tryCatch({
   results <- perform_multi_cancer_analysis(
-    cancer_types = c("UVM"),
+    cancer_types = c("GBM"),
     analysis_type = "PSI",
     gene = "SRRM3",
     grouping_method = "quartile"
   )
   
   if (!is.null(results)) {
-    saveRDS(results, file.path("results", paste0("UVM_results.rds")))
-    cat(sprintf("\nSuccessfully saved results for %s\n", "UVM"))
+    saveRDS(results, file.path("results", paste0("GBM_results.rds")))
+    cat(sprintf("\nSuccessfully saved results for %s\n", "GBM"))
   } else {
-    cat(sprintf("\nNo results generated for %s\n", "UVM"))
+    cat(sprintf("\nNo results generated for %s\n", "GBM"))
   }
 }, error = function(e) {
-  cat(sprintf("\nError in analysis for %s: %s\n", "UVM", e))
+  cat(sprintf("\nError in analysis for %s: %s\n", "GBM", e))
   quit(status = 1)
 })
 
-cat(sprintf("\nCompleted analysis for %s\n", "UVM"))
+cat(sprintf("\nCompleted analysis for %s\n", "GBM"))

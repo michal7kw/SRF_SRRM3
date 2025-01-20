@@ -14,7 +14,7 @@ library(mclust)      # For mixture modeling
 # library(timeROC)     # For time-dependent ROC
 library(plotly)      # For interactive plots
 library(cmprsk)      # For competing risks
-library(rms)         # For advanced survival modeling
+# library(rms)         # For advanced survival modeling
 library(forestplot)  # For forest plots
 
 # Add after library imports:

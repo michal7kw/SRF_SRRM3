@@ -128,16 +128,22 @@ get_expression_data_optimized <- function(cancer_type, gene, timeout = 300) {
     return(cached_data)
   }
   
-  with_error_handling({
+  tryCatch({
     # Set timeout
     old_timeout <- options("timeout")
     on.exit(options(old_timeout))
     options(timeout = timeout)
     
-    # First try to get project info
+    # Create query
     project <- paste0("TCGA-", cancer_type)
     
-    # Create query
+    # First check if the project exists
+    projects <- TCGAbiolinks:::getGDCprojects()
+    if (!project %in% projects$project_id) {
+      futile.logger::flog.error("Project %s not found in GDC", project)
+      return(NULL)
+    }
+    
     query <- GDCquery(
       project = project,
       data.category = "Transcriptome Profiling",
@@ -146,26 +152,51 @@ get_expression_data_optimized <- function(cancer_type, gene, timeout = 300) {
       sample.type = c("Primary Tumor")
     )
     
+    if (is.null(query)) {
+      futile.logger::flog.error("Failed to create GDC query for %s", cancer_type)
+      return(NULL)
+    }
+    
+    # Check if data is already downloaded
+    query_results <- getResults(query)
+    if (nrow(query_results) == 0) {
+      futile.logger::flog.error("No expression data found for %s", cancer_type)
+      return(NULL)
+    }
+    
     # Download and prepare data
-    GDCdownload(query)
+    GDCdownload(query, method = "api")
     expr_data <- GDCprepare(query)
+    
+    if (is.null(expr_data)) {
+      futile.logger::flog.error("Failed to prepare expression data for %s", cancer_type)
+      return(NULL)
+    }
     
     # Get gene expression
     gene_idx <- which(rowData(expr_data)$gene_name == gene)
     if (length(gene_idx) == 0) {
-      stop(paste("Gene", gene, "not found in dataset"))
+      futile.logger::flog.error("Gene %s not found in dataset", gene)
+      return(NULL)
     }
     
     expression_data <- data.frame(
-      sample_id = colnames(expr_data),
-      expression = assay(expr_data)[gene_idx, ],
+      sample_id = colData(expr_data)$barcode,  # Use barcode instead of colnames
+      expression = assay(expr_data)[gene_idx[1], ],  # Take first match if multiple
       stringsAsFactors = FALSE
-    )
+    ) %>%
+      mutate(
+        sample_id = substr(sample_id, 1, 12)  # Ensure TCGA barcode format
+      ) %>%
+      distinct(sample_id, .keep_all = TRUE)
     
     # Cache the results
     cache_mgr$save_data(cache_key, expression_data)
     
     return(expression_data)
+  }, error = function(e) {
+    futile.logger::flog.error("Error in expression data retrieval: %s", e$message)
+    return(NULL)
   })
 }
 
@@ -180,8 +211,8 @@ get_psi_data_optimized <- function(cancer_type) {
     return(cached_data)
   }
   
-  # Create query for junction data
-  project <- paste0("TCGA-", cancer_type)
+  # Format project name for recount3
+  project <- tolower(paste0("tcga_", cancer_type))
   
   # Create region around exon 15
   region <- GRanges(
@@ -192,9 +223,21 @@ get_psi_data_optimized <- function(cancer_type) {
     )
   )
   
+  # Get available projects to validate
+  human_projects <- available_projects()
+  
+  # Check if project exists
+  if (!project %in% human_projects$project) {
+    futile.logger::flog.error("Project %s not found in recount3", project)
+    return(NULL)
+  }
+  
+  # Get project info
+  project_info <- subset(human_projects, project == project)
+  
   # Get junction data using recount3
   rse <- create_rse(
-    project = project,
+    project_info = project_info,
     type = "jxn",
     jxn_format = "UNIQUE",
     verbose = TRUE
@@ -228,10 +271,12 @@ get_psi_data_optimized <- function(cancer_type) {
     psi = psi_values,
     stringsAsFactors = FALSE
   ) %>%
-    # Convert TCGA sample IDs to match clinical data format
+    # Convert recount3 sample IDs to TCGA format
     mutate(
-      sample_id = substr(sample_id, 1, 12)  # Take first 12 characters of TCGA ID
-    )
+      sample_id = sub(".*?\\.", "", sample_id),  # Remove prefix before the dot
+      sample_id = substr(sample_id, 1, 12)  # Take first 12 characters
+    ) %>%
+    distinct(sample_id, .keep_all = TRUE)  # Remove any duplicates
   
   # Cache the results
   cache_mgr$save_data(cache_key, cancer_data)
@@ -352,27 +397,29 @@ perform_survival_analysis_enhanced <- function(cancer_type,
       filter(!is.na(time), time > 0)  # Remove invalid times
       
   } else {
-    # Progression-Free Survival - using disease-free survival data
+    # Progression-Free Survival
     clinical <- clinical %>%
       mutate(
-        time = days_to_last_follow_up,  # Default to last follow-up
-        event = 0  # Default to no event
+        # First set default values
+        time = as.numeric(days_to_last_follow_up),
+        event = 0L
       ) %>%
       mutate(
-        # Update time if progression event exists
+        # Update time based on first occurrence of progression/recurrence
         time = case_when(
-          !is.na(days_to_progression) ~ days_to_progression,
-          !is.na(days_to_recurrence) ~ days_to_recurrence,
-          TRUE ~ time
+          !is.na(days_to_progression) & as.numeric(days_to_progression) > 0 ~ as.numeric(days_to_progression),
+          !is.na(days_to_recurrence) & as.numeric(days_to_recurrence) > 0 ~ as.numeric(days_to_recurrence),
+          !is.na(time) & time > 0 ~ time,
+          TRUE ~ NA_real_
         ),
         # Update event status
         event = case_when(
-          !is.na(progression_status) & progression_status == "YES" ~ 1,
-          !is.na(disease_free_status) & disease_free_status == "Recurred/Progressed" ~ 1,
+          !is.na(progression_status) & progression_status == "YES" ~ 1L,
+          !is.na(disease_free_status) & disease_free_status == "Recurred/Progressed" ~ 1L,
           TRUE ~ event
         )
       ) %>%
-      filter(!is.na(time), time > 0)  # Remove invalid times
+      filter(!is.na(time), time > 0, !is.na(event))  # Remove invalid entries
   }
   
   # Check if we have enough data
@@ -382,14 +429,24 @@ perform_survival_analysis_enhanced <- function(cancer_type,
   }
   
   # Merge clinical and molecular data
-  analysis_data <- merge(molecular_data, clinical, 
+  analysis_data <- tryCatch({
+    merged_data <- merge(molecular_data, clinical, 
                         by.x = "sample_id", 
-                        by.y = "submitter_id")
-  
-  if (nrow(analysis_data) < 10) {
-    futile.logger::flog.error("Insufficient matched data after merging")
+                        by.y = "submitter_id",
+                        all = FALSE)  # Only keep matched samples
+    
+    if (nrow(merged_data) < 10) {
+      futile.logger::flog.error("Insufficient matched data after merging (n=%d)", nrow(merged_data))
+      return(NULL)
+    }
+    
+    merged_data
+  }, error = function(e) {
+    futile.logger::flog.error("Error merging clinical and molecular data: %s", e$message)
     return(NULL)
-  }
+  })
+  
+  if (is.null(analysis_data)) return(NULL)
   
   # Create stratification based on median
   analysis_data <- analysis_data %>%

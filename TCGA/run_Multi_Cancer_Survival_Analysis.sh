@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=Multi_Cancer_Survival_Analysis
+#SBATCH --job-name=Multi_Cancer_Survival
 #SBATCH --account=kubacki.michal
-#SBATCH --mem=32GB
+#SBATCH --mem=64GB
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks=16
+#SBATCH --ntasks=32
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=kubacki.michal@hsr.it
 #SBATCH --error="logs/Multi_Cancer_Survival_Analysis_%a.err"
@@ -21,6 +21,15 @@ cd /beegfs/scratch/ric.broccoli/kubacki.michal/SRF_SRRM3/TCGA/
 # Create necessary directories
 mkdir -p logs
 mkdir -p results
+mkdir -p cache
+
+# Set R environment variables for better performance
+export R_MAX_NUM_DLLS=150
+export R_GC_MEM_GROW=3
+export R_ENABLE_JIT=3
+export OMP_NUM_THREADS=$SLURM_NTASKS
+export OPENBLAS_NUM_THREADS=$SLURM_NTASKS
+export MKL_NUM_THREADS=$SLURM_NTASKS
 
 # Function to monitor resource usage
 monitor_resources() {

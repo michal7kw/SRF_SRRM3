@@ -1,45 +1,90 @@
 # Load required libraries
-library(TCGAbiolinks)
-library(survminer)
-library(survival)
-library(SummarizedExperiment)
-library(tidyverse)
-library(DESeq2)
-library(recount3)
-library(GenomicRanges)
-library(viridis)
-library(httr)
-library(retry)
-library(futile.logger)
-library(GenomicFeatures)
-library(rtracklayer)
-library(matrixStats)  # for rowVars
-library(biomaRt)
-library(sparseMatrixStats)  # for rowVars with sparse matrices
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(survival)
+  library(survminer)
+  library(recount3)
+  library(biomaRt)
+  library(parallel)
+  library(BiocParallel)
+  library(TCGAbiolinks)
+  library(SummarizedExperiment)
+  library(tidyverse)
+  library(DESeq2)
+  library(httr)
+  library(retry)
+  library(futile.logger)
+  library(GenomicFeatures)
+  library(rtracklayer)
+  library(matrixStats)
+  library(sparseMatrixStats)
+  library(viridis)
+  library(data.table)
+})
 
-# Create cache directory
-if (!dir.exists("cache")) {
-  dir.create("cache")
+# Set up parallel processing
+num_cores <- as.numeric(Sys.getenv("SLURM_NTASKS", unset = "1"))
+if (num_cores > 1) {
+  message(sprintf("Setting up parallel processing with %d cores", num_cores))
+  BiocParallel::register(MulticoreParam(workers = num_cores))
+} else {
+  message("Running in single-core mode")
+}
+
+# Create necessary directories
+dir.create("results", showWarnings = FALSE)
+dir.create("cache", showWarnings = FALSE)
+dir.create("logs", showWarnings = FALSE)
+
+# Cache connection to Ensembl
+ensembl <- NULL
+get_ensembl_connection <- function() {
+  if (is.null(ensembl)) {
+    ensembl <<- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+  }
+  return(ensembl)
 }
 
 # Function to get clinical data
 get_clinical_data <- function(cancer_type) {
-  clinical <- GDCquery_clinic(paste0("TCGA-", cancer_type))
+  message(sprintf("Getting clinical data for %s", cancer_type))
+  clinical <- GDCquery_clinic(project = paste0("TCGA-", cancer_type), type = "clinical")
   
-  # Process survival information and ensure consistent column names
-  clinical <- clinical %>%
-    dplyr::mutate(
-      submitter_id = bcr_patient_barcode,  # Use bcr_patient_barcode instead of submitter_id
-      deceased = ifelse(vital_status == "Alive", FALSE, TRUE),
-      overall_survival = ifelse(vital_status == "Alive",
-                              days_to_last_follow_up,
-                              days_to_death)
+  if (nrow(clinical) == 0) {
+    stop(sprintf("No clinical data found for %s", cancer_type))
+  }
+  
+  # Print column names for debugging
+  message("Available clinical columns:")
+  message(paste(colnames(clinical), collapse=", "))
+  
+  # Clean and prepare clinical data
+  clinical_clean <- clinical %>%
+    dplyr::transmute(
+      case_id = submitter_id,
+      vital_status = vital_status,
+      # Handle survival time with different column names
+      overall_survival = case_when(
+        !is.na(days_to_death) ~ as.numeric(days_to_death),
+        !is.na(days_to_last_follow_up) ~ as.numeric(days_to_last_follow_up),
+        TRUE ~ NA_real_
+      ),
+      # Handle different vital status formats
+      deceased = case_when(
+        tolower(vital_status) == "dead" ~ TRUE,
+        tolower(vital_status) == "alive" ~ FALSE,
+        TRUE ~ NA
+      )
     ) %>%
-    dplyr::filter(!is.na(overall_survival)) %>%  # Remove samples with missing survival
-    dplyr::select(submitter_id, deceased, overall_survival, dplyr::everything())  # Ensure key columns are present
+    dplyr::filter(!is.na(overall_survival), !is.na(deceased))
   
-  message(sprintf("Clinical data has %d patients with valid survival data", nrow(clinical)))
-  return(clinical)
+  # Print summary of processed data
+  message(sprintf("Processed clinical data summary:"))
+  message(sprintf("- Total patients: %d", nrow(clinical_clean)))
+  message(sprintf("- Patients with death events: %d", sum(clinical_clean$deceased)))
+  message(sprintf("- Median survival time: %.1f days", median(clinical_clean$overall_survival)))
+  
+  return(clinical_clean)
 }
 
 # Function to get expression data
@@ -60,77 +105,41 @@ get_expression_data <- function(cancer_type, gene_name) {
                         project_type == "data_sources")
   
   if (nrow(project_info) != 1) {
-    stop("Could not find unique project for ", cancer_type)
+    stop(sprintf("Could not find unique project for %s", cancer_type))
   }
   
   message("Creating RSE object...")
   rse_gene <- create_rse(
     project_info[1, ],
-    type = "gene"
+    type = "gene",
+    annotation = "gencode_v26"
   )
   
   # Get gene expression
-  gene_idx <- which(rowData(rse_gene)$gene_name == gene_name)
-  if (length(gene_idx) == 0) {
-    stop(paste("Gene", gene_name, "not found in dataset"))
+  gene_idx <- which(rowData(rse_gene)$gene_name == gene_name)[1]
+  if (is.na(gene_idx)) {
+    stop(sprintf("Gene %s not found in dataset", gene_name))
   }
   
+  # Create data frame
   expression_data <- data.frame(
-    case_id = substr(colData(rse_gene)$tcga.tcga_barcode, 1, 12),  # Trim to first 12 characters
-    expression = assays(rse_gene)$counts[gene_idx[1], ]
+    case_id = substr(colData(rse_gene)$tcga.tcga_barcode, 1, 12),
+    expression = assays(rse_gene)$counts[gene_idx, ]
   )
   
-  # Remove any duplicate IDs by taking the mean expression value
+  # Handle duplicates using dplyr
   if (any(duplicated(expression_data$case_id))) {
-    message("Found duplicate sample IDs, taking mean expression values")
     expression_data <- expression_data %>%
-      dplyr::group_by(case_id) %>%
-      dplyr::summarize(expression = mean(expression, na.rm = TRUE)) %>%
-      dplyr::ungroup()
+      group_by(case_id) %>%
+      summarize(expression = mean(expression, na.rm = TRUE)) %>%
+      ungroup()
   }
   
   saveRDS(expression_data, cache_file)
   return(expression_data)
 }
 
-# Update get_gene_info function
-get_gene_info <- function(gene_name) {
-  # Connect to Ensembl
-  ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
-  
-  # Get gene coordinates
-  gene_info <- getBM(
-    attributes = c(
-      "hgnc_symbol",
-      "chromosome_name",
-      "start_position",
-      "end_position",
-      "strand"
-    ),
-    filters = "hgnc_symbol",
-    values = gene_name,
-    mart = ensembl
-  )
-  
-  if (nrow(gene_info) == 0) {
-    stop(paste("Could not find gene info for", gene_name))
-  }
-  
-  # If multiple entries exist, use the first one
-  if (nrow(gene_info) > 1) {
-    message("Multiple entries found for ", gene_name, ", using first entry")
-    gene_info <- gene_info[1, ]
-  }
-  
-  # Add chromosome prefix if missing
-  if (!grepl("^chr", gene_info$chromosome_name)) {
-    gene_info$chromosome_name <- paste0("chr", gene_info$chromosome_name)
-  }
-  
-  return(gene_info)
-}
-
-# Update get_psi_data function
+# Function to get PSI data
 get_psi_data <- function(cancer_type, gene_name) {
   cache_file <- file.path("cache", paste0("psi_data_", cancer_type, "_", gene_name, ".rds"))
   
@@ -237,307 +246,234 @@ get_psi_data <- function(cancer_type, gene_name) {
   return(psi_data)
 }
 
-# Add this helper function
-check_sample_ids <- function(clinical_ids, molecular_ids) {
-  # Get first few examples of each
-  clin_examples <- head(clinical_ids)
-  mol_examples <- head(molecular_ids)
+# Update get_gene_info function
+get_gene_info <- function(gene_name) {
+  # Connect to Ensembl
+  ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
   
-  message("Sample ID format check:")
-  message("Clinical ID examples: ", paste(clin_examples, collapse=", "))
-  message("Molecular ID examples: ", paste(mol_examples, collapse=", "))
-  message("Molecular IDs trimmed to 12 chars: ", 
-          paste(head(substr(molecular_ids, 1, 12)), collapse=", "))
+  # Get gene coordinates
+  gene_info <- getBM(
+    attributes = c(
+      "hgnc_symbol",
+      "chromosome_name",
+      "start_position",
+      "end_position",
+      "strand"
+    ),
+    filters = "hgnc_symbol",
+    values = gene_name,
+    mart = ensembl
+  )
   
-  # Check for common TCGA barcode lengths
-  clin_lengths <- unique(nchar(clinical_ids))
-  mol_lengths <- unique(nchar(molecular_ids))
+  if (nrow(gene_info) == 0) {
+    stop(paste("Could not find gene info for", gene_name))
+  }
   
-  message("Clinical ID lengths: ", paste(clin_lengths, collapse=", "))
-  message("Molecular ID lengths: ", paste(mol_lengths, collapse=", "))
+  # If multiple entries exist, use the first one
+  if (nrow(gene_info) > 1) {
+    message("Multiple entries found for ", gene_name, ", using first entry")
+    gene_info <- gene_info[1, ]
+  }
   
-  # Find matching samples using trimmed molecular IDs
-  matches <- sum(clinical_ids %in% substr(molecular_ids, 1, 12))
-  message(sprintf("Found %d matching samples between clinical and molecular data", matches))
+  # Add chromosome prefix if missing
+  if (!grepl("^chr", gene_info$chromosome_name)) {
+    gene_info$chromosome_name <- paste0("chr", gene_info$chromosome_name)
+  }
+  
+  return(gene_info)
+}
+
+# Function to perform multi-cancer analysis
+perform_multi_cancer_analysis <- function(cancer_types, analysis_type = "PSI", gene = "SRRM3", grouping_method = "quartile") {
+  results_list <- list()
+  
+  for(cancer_type in cancer_types) {
+    tryCatch({
+      message(sprintf("\nProcessing %s", cancer_type))
+      results <- perform_survival_analysis(cancer_type, analysis_type, gene, grouping_method)
+      results_list[[cancer_type]] <- results
+    }, error = function(e) {
+      message(sprintf("Error analyzing %s: %s", cancer_type, e$message))
+    })
+  }
+  
+  return(results_list)
 }
 
 # Function to perform survival analysis
-perform_survival_analysis <- function(cancer_type, analysis_type = "PSI", gene = "SRRM3", grouping_method = "quartile") {
-  message(sprintf("\nAnalyzing %s for %s using %s grouping", gene, cancer_type, grouping_method))
-  
+perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SRRM3", grouping_method = "quartile") {
   # Get clinical data
   clinical_data <- get_clinical_data(cancer_type)
   message(sprintf("Clinical data: %d samples", nrow(clinical_data)))
   
-  # Get molecular data based on analysis type
-  if (analysis_type == "PSI") {
-    message("Loading cached PSI data...")
-    molecular_data <- get_psi_data(cancer_type, gene)
-    message(sprintf("Molecular data: %d samples", nrow(molecular_data)))
+  # Get molecular data based on data type
+  molecular_data <- if (data_type == "PSI") {
+    get_psi_data(cancer_type, gene)
   } else {
-    molecular_data <- get_expression_data(cancer_type, gene)
-    message(sprintf("Molecular data: %d samples", nrow(molecular_data)))
+    get_expression_data(cancer_type, gene)
   }
-  
-  # Debug information for sample IDs
-  message("Sample ID format check:")
-  message("Clinical ID examples: ", paste(head(clinical_data$submitter_id), collapse=", "))
-  message("Molecular ID examples: ", paste(head(molecular_data$case_id), collapse=", "))
-  message("Molecular IDs trimmed to 12 chars: ", paste(head(substr(molecular_data$case_id, 1, 12)), collapse=", "))
-  message("Clinical ID lengths: ", unique(nchar(clinical_data$submitter_id)))
-  message("Molecular ID lengths: ", unique(nchar(molecular_data$case_id)))
+  message(sprintf("Molecular data: %d samples", nrow(molecular_data)))
   
   # Ensure IDs are in the same format before merging
-  clinical_data$merge_id <- clinical_data$submitter_id
-  molecular_data$merge_id <- substr(molecular_data$case_id, 1, 12)  # Trim molecular IDs to 12 chars
-  
-  # Find matching samples
-  matching_samples <- intersect(clinical_data$merge_id, molecular_data$merge_id)
-  message(sprintf("Found %d matching samples between clinical and molecular data", length(matching_samples)))
-  
-  # Additional debug info about sample matching
-  message("\nSample matching details:")
-  message("Number of unique clinical IDs: ", length(unique(clinical_data$merge_id)))
-  message("Number of unique molecular IDs: ", length(unique(molecular_data$merge_id)))
-  message("Number of duplicate clinical IDs: ", sum(duplicated(clinical_data$merge_id)))
-  message("Number of duplicate molecular IDs: ", sum(duplicated(molecular_data$merge_id)))
+  clinical_data$merge_id <- clinical_data$case_id
+  molecular_data$merge_id <- substr(molecular_data$case_id, 1, 12)
   
   # Merge the data
-  merged_data <- inner_join(
-    clinical_data,
-    molecular_data,
-    by = "merge_id"
-  )
-  
-  message(sprintf("After merging: %d samples", nrow(merged_data)))
-  
-  # Check for any unexpected duplicates in merged data
-  if (nrow(merged_data) > length(matching_samples)) {
-    message("\nWarning: More rows in merged data than matching samples")
-    message("This may be due to duplicate IDs in either clinical or molecular data")
-    message("Samples that appear multiple times:")
-    duplicate_samples <- merged_data$merge_id[duplicated(merged_data$merge_id)]
-    message(paste(duplicate_samples, collapse=", "))
-  }
-  
-  # Add debug info
-  message("Debug info:")
-  message("First few clinical IDs: ", paste(head(clinical_data$submitter_id), collapse=", "))
-  message("First few molecular IDs: ", paste(head(molecular_data$case_id), collapse=", "))
-  message("First few clinical bcr_patient_barcodes: ", paste(head(clinical_data$bcr_patient_barcode), collapse=", "))
-  message("Clinical data columns: ", paste(colnames(clinical_data), collapse=", "))
+  merged_data <- inner_join(clinical_data, molecular_data, by = "merge_id")
+  message(sprintf("Merged data samples: %d", nrow(merged_data)))
   
   if (nrow(merged_data) == 0) {
-    stop("No valid samples after merging and filtering")
+    stop("No samples after merging clinical and molecular data")
   }
   
   # Group samples based on molecular values
-  value_col <- ifelse(analysis_type == "PSI", "psi", "expression")
+  value_col <- if(data_type == "PSI") "psi" else "expression"
   
-  if (grouping_method == "median") {
-    merged_data$group <- ifelse(
-      merged_data[[value_col]] > median(merged_data[[value_col]], na.rm = TRUE), 
-      "High", "Low"
-    )
-  } else if (grouping_method == "quartile") {
+  if (grouping_method == "quartile") {
     quartiles <- quantile(merged_data[[value_col]], probs = c(0.25, 0.75), na.rm = TRUE)
-    merged_data$group <- case_when(
-      merged_data[[value_col]] <= quartiles[1] ~ "Low",
-      merged_data[[value_col]] >= quartiles[2] ~ "High",
-      TRUE ~ "Medium"
-    )
+    if (quartiles[1] != quartiles[2]) {  # Check if quartiles are different
+      merged_data$group <- case_when(
+        merged_data[[value_col]] <= quartiles[1] ~ "Low",
+        merged_data[[value_col]] >= quartiles[2] ~ "High",
+        TRUE ~ "Medium"
+      )
+    } else {
+      # If quartiles are the same, use median split
+      median_val <- median(merged_data[[value_col]], na.rm = TRUE)
+      merged_data$group <- if_else(merged_data[[value_col]] > median_val, "High", "Low")
+    }
   }
   
-  # Clean up data
-  merged_data <- merged_data %>%
-    dplyr::mutate(
-      overall_survival = as.numeric(overall_survival),
-      deceased = as.logical(deceased)
-    ) %>%
-    dplyr::filter(!is.na(overall_survival), !is.na(deceased))
+  # Print group sizes
+  message("Sample sizes per group:")
+  print(table(merged_data$group))
   
-  message(sprintf("After cleaning: %d samples", nrow(merged_data)))
-  
-  if (nrow(merged_data) == 0) {
-    stop("No valid samples after merging and filtering")
-  }
-  
-  # Create survival object and fit
-  message("Fitting survival model...")
-  fit <- survfit(Surv(overall_survival, deceased) ~ group, data = merged_data)
-  
-  # Add summary statistics calculation
-  message("Calculating group statistics...")
-  group_stats <- merged_data %>%
-    group_by(group) %>%
-    summarise(
-      mean_val = mean(!!sym(value_col), na.rm = TRUE),
-      median_val = median(!!sym(value_col), na.rm = TRUE),
-      sd_val = sd(!!sym(value_col), na.rm = TRUE),
-      min_val = min(!!sym(value_col), na.rm = TRUE),
-      max_val = max(!!sym(value_col), na.rm = TRUE),
-      n = n(),
-      .groups = 'drop'
-    )
-  
-  # Create subtitle with ranges
-  subtitle <- paste(
-    sapply(1:nrow(group_stats), function(i) {
-      group <- group_stats$group[i]
-      if(analysis_type == "PSI") {
-        sprintf("%s: PSI %.1f-%.1f%% (median: %.1f%%, n=%d)",
-                group,
-                group_stats$min_val[i] * 100,
-                group_stats$max_val[i] * 100,
-                group_stats$median_val[i] * 100,
-                group_stats$n[i])
-      } else {
-        sprintf("%s: Expr %.1f-%.1f (median: %.1f, n=%d)",
-                group,
-                group_stats$min_val[i],
-                group_stats$max_val[i],
-                group_stats$median_val[i],
-                group_stats$n[i])
-      }
-    }),
-    collapse = "\n"
-  )
+  # Fit survival model
+  fit <- survfit(Surv(time = overall_survival, 
+                     event = deceased) ~ group, 
+                data = merged_data)
   
   # Create plot
-  message("Creating survival plot...")
-  surv_plot <- ggsurvplot(
+  plot <- ggsurvplot(
     fit,
     data = merged_data,
     pval = TRUE,
     risk.table = TRUE,
-    risk.table.height = 0.25,
-    xlab = "Time (days)",
-    ylab = "Overall Survival Probability",
-    title = sprintf("%s %s Survival Analysis - %s", gene, analysis_type, cancer_type),
-    subtitle = subtitle,
-    legend.title = paste(analysis_type, "Level"),
-    palette = c("High" = "#E7B800", "Low" = "#2E9FDF", "Medium" = "#868686"),
-    font.subtitle = c(10, "plain"),
-    break.time.by = 365,
-    ggtheme = theme_bw() +
-      theme(
-        plot.title = element_text(size = 14, face = "bold"),
-        plot.subtitle = element_text(size = 10),
-        axis.title = element_text(size = 12),
-        axis.text = element_text(size = 10),
-        legend.title = element_text(size = 12),
-        legend.text = element_text(size = 10)
-      )
+    tables.height = 0.3,
+    title = sprintf("%s survival by %s %s", cancer_type, gene, data_type)
   )
   
-  # Create results directory if it doesn't exist
-  if (!dir.exists("results")) {
-    dir.create("results")
-  }
-  
   # Save plots
-  plot_base_name <- file.path("results", 
-                             sprintf("%s_%s_%s_survival", 
-                                   cancer_type, gene, analysis_type))
+  plot_base <- file.path("results", sprintf("%s_%s_%s_survival", cancer_type, gene, data_type))
+  ggsave(paste0(plot_base, ".pdf"), plot = plot$plot, width = 10, height = 8)
+  ggsave(paste0(plot_base, ".png"), plot = plot$plot, width = 10, height = 8, dpi = 300)
   
-  # Save as PDF
-  pdf(paste0(plot_base_name, ".pdf"), width = 10, height = 8)
-  print(surv_plot)
-  dev.off()
+  message(sprintf("Saved plots to %s.{pdf,png}", plot_base))
   
-  # Save as PNG
-  png(paste0(plot_base_name, ".png"), 
-      width = 10*100, height = 8*100, res = 100)
-  print(surv_plot)
-  dev.off()
-  
-  # Save results as RDS
-  saveRDS(list(
-    plot = surv_plot,
-    fit = fit,
-    data = merged_data,
-    group_stats = group_stats
-  ), paste0(plot_base_name, "_results.rds"))
-  
-  message(sprintf("Results saved to %s.{pdf,png,rds}", plot_base_name))
-  
-  return(list(
-    plot = surv_plot,
-    fit = fit,
-    data = merged_data,
-    group_stats = group_stats
-  ))
+  return(list(fit = fit, data = merged_data))
 }
 
-# Create results directory if it doesn't exist
-if (!dir.exists("results")) {
-  dir.create("results")
+# Main analysis
+cancer_type <- NULL
+results_list <- list()  # Initialize results list at the top level
+
+array_task_id <- as.numeric(Sys.getenv("SLURM_ARRAY_TASK_ID", unset = "-1"))
+if (array_task_id >= 0) {
+  cancer_types <- c("BRCA", "LUAD", "COAD", "GBM", "KIRC", "PRAD")
+  if (array_task_id < length(cancer_types)) {
+    cancer_type <- cancer_types[array_task_id + 1]
+    message(sprintf("\nProcessing cancer type: %s", cancer_type))
+  }
 }
 
-# Get list of cancer types
-cancer_types <- c("BRCA", "LUAD", "COAD", "GBM", "KIRC", "PRAD")
-
-# Run analysis for each cancer type
-results_list <- list()
-
-for(cancer_type in cancer_types) {
+if (!is.null(cancer_type)) {
+  # Run each analysis type separately with its own error handling
+  
+  # 1. PSI Analysis for SRRM3
   tryCatch({
-    message(sprintf("\nProcessing %s", cancer_type))
-    
-    # Run PSI analysis for SRRM3
     message("\nRunning SRRM3 PSI analysis...")
     results_psi <- perform_survival_analysis(cancer_type, "PSI", "SRRM3", "quartile")
     results_list[[paste0(cancer_type, "_SRRM3_PSI")]] <- results_psi
-    
-    # Run expression analysis for SRRM3
-    message("\nRunning SRRM3 expression analysis...")
-    results_srrm3_expr <- perform_survival_analysis(cancer_type, "expression", "SRRM3", "quartile")
-    results_list[[paste0(cancer_type, "_SRRM3_expression")]] <- results_srrm3_expr
-    
-    # Run expression analysis for SRRM4
-    message("\nRunning SRRM4 expression analysis...")
-    results_srrm4_expr <- perform_survival_analysis(cancer_type, "expression", "SRRM4", "quartile")
-    results_list[[paste0(cancer_type, "_SRRM4_expression")]] <- results_srrm4_expr
-    
+    message("SRRM3 PSI analysis completed successfully")
   }, error = function(e) {
-    message(sprintf("Error analyzing %s: %s", cancer_type, e$message))
+    message(sprintf("Error in SRRM3 PSI analysis: %s", conditionMessage(e)))
   })
-}
-
-# Create a summary of all analyses
-message("\nCreating analysis summary...")
-summary_data <- data.frame()
-
-for(result_name in names(results_list)) {
-  result <- results_list[[result_name]]
-  if (!is.null(result)) {
-    # Extract cancer type and analysis type from result name
-    parts <- strsplit(result_name, "_")[[1]]
-    cancer_type <- parts[1]
-    gene <- parts[2]
-    analysis_type <- parts[3]
+  
+  # 2. Expression Analysis for SRRM3
+  tryCatch({
+    message("\nRunning SRRM3 expression analysis...")
+    results_expr_srrm3 <- perform_survival_analysis(cancer_type, "expression", "SRRM3", "quartile")
+    results_list[[paste0(cancer_type, "_SRRM3_expression")]] <- results_expr_srrm3
+    message("SRRM3 expression analysis completed successfully")
+  }, error = function(e) {
+    message(sprintf("Error in SRRM3 expression analysis: %s", conditionMessage(e)))
+  })
+  
+  # 3. Expression Analysis for SRRM4
+  tryCatch({
+    message("\nRunning SRRM4 expression analysis...")
+    results_expr_srrm4 <- perform_survival_analysis(cancer_type, "expression", "SRRM4", "quartile")
+    results_list[[paste0(cancer_type, "_SRRM4_expression")]] <- results_expr_srrm4
+    message("SRRM4 expression analysis completed successfully")
+  }, error = function(e) {
+    message(sprintf("Error in SRRM4 expression analysis: %s", conditionMessage(e)))
+  })
+  
+  # Save results if any analyses were successful
+  if (length(results_list) > 0) {
+    results_file <- file.path("results", paste0(cancer_type, "_results.rds"))
+    saveRDS(results_list, results_file)
+    message(sprintf("\nSaved results to %s", results_file))
     
-    # Get summary statistics
-    summary_stats <- data.frame(
-      cancer_type = cancer_type,
-      gene = gene,
-      analysis_type = analysis_type,
-      n_samples = nrow(result$data),
-      n_high = sum(result$data$group == "High"),
-      n_medium = sum(result$data$group == "Medium"),
-      n_low = sum(result$data$group == "Low"),
-      logrank_pvalue = 1 - pchisq(result$fit$chisq, df = length(unique(result$data$group)) - 1)
-    )
+    # Create summary for this cancer type
+    summary_data <- data.frame()
     
-    summary_data <- rbind(summary_data, summary_stats)
+    for (result_name in names(results_list)) {
+      result <- results_list[[result_name]]
+      if (!is.null(result) && !is.null(result$data) && !is.null(result$fit)) {
+        # Extract analysis components from result name
+        parts <- strsplit(result_name, "_")[[1]]
+        gene <- parts[2]
+        analysis_type <- parts[3]
+        
+        # Calculate log-rank p-value safely
+        p_value <- tryCatch({
+          1 - pchisq(result$fit$chisq, df = length(unique(result$data$group)) - 1)
+        }, error = function(e) {
+          NA_real_
+        })
+        
+        # Create summary row
+        summary_stats <- data.frame(
+          cancer_type = cancer_type,
+          gene = gene,
+          analysis_type = analysis_type,
+          n_samples = nrow(result$data),
+          n_high = sum(result$data$group == "High"),
+          n_medium = sum(result$data$group == "Medium"),
+          n_low = sum(result$data$group == "Low"),
+          logrank_pvalue = p_value
+        )
+        
+        summary_data <- rbind(summary_data, summary_stats)
+      }
+    }
+    
+    # Save summary if we have data
+    if (nrow(summary_data) > 0) {
+      summary_file <- file.path("results", paste0(cancer_type, "_summary.csv"))
+      write.csv(summary_data, summary_file, row.names = FALSE)
+      message(sprintf("Saved summary to %s", summary_file))
+      message("\nAnalysis summary:")
+      print(summary_data)
+    } else {
+      message("No successful analyses to summarize")
+    }
+  } else {
+    message("\nNo successful analyses completed")
   }
+  
+  message(sprintf("\nCompleted all analyses for %s at %s", cancer_type, format(Sys.time())))
+} else {
+  message("No valid cancer type specified")
 }
-
-# Save summary to CSV
-write.csv(summary_data, 
-          file.path("results", "survival_analysis_summary.csv"), 
-          row.names = FALSE)
-
-message("\nAnalysis complete! Results have been saved to the results directory")
-message("\nSummary of analyses:")
-print(summary_data)

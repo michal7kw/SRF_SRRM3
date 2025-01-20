@@ -1,0 +1,2 @@
+"cancer_type","gene","analysis_type","n_samples","n_high","n_medium","n_low","logrank_pvalue"
+"GBM","SRRM3","PSI",167,43,82,42,NA

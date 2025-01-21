@@ -1,0 +1,2 @@
+"cancer_type","gene","total_samples","high_group","low_group","medium_group","logrank_pvalue","cox_pvalue","cox_hr"
+"KIRC","SRRM3",529,265,264,0,0.0189907005418645,0.900288474253557,1.00000018891056

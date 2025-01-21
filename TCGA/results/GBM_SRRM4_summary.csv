@@ -1,0 +1,2 @@
+"cancer_type","gene","total_samples","high_group","low_group","medium_group","logrank_pvalue","cox_pvalue","cox_hr"
+"GBM","SRRM4",159,80,79,0,0.725338707436614,0.057206666076251,1.00000027054195

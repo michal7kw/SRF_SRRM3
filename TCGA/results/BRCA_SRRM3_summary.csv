@@ -1,0 +1,2 @@
+"cancer_type","gene","total_samples","high_group","low_group","medium_group","logrank_pvalue","cox_pvalue","cox_hr"
+"BRCA","SRRM3",1231,617,614,0,0.958630026356742,0.835348820105848,1.00000043620992

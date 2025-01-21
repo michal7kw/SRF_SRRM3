@@ -1,2 +1,2 @@
-"cancer_type","gene","analysis_type","n_samples","n_high","n_medium","n_low","logrank_pvalue"
-"LUAD","SRRM3","PSI",508,187,111,210,NA
+"cancer_type","gene","data_type","total_samples","high_group","low_group","medium_group"
+"LUAD","SRRM3","PSI",508,187,210,111

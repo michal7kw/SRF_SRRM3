@@ -1,2 +1,2 @@
-"cancer_type","gene","analysis_type","n_samples","n_high","n_medium","n_low","logrank_pvalue"
-"PRAD","SRRM3","PSI",495,124,120,251,NA
+"cancer_type","gene","data_type","total_samples","high_group","low_group","medium_group"
+"PRAD","SRRM3","PSI",495,124,251,120

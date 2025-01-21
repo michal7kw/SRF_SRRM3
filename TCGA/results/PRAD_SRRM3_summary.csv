@@ -1,0 +1,2 @@
+"cancer_type","gene","total_samples","high_group","low_group","medium_group","logrank_pvalue","cox_pvalue","cox_hr"
+"PRAD","SRRM3",495,248,247,0,0.201860210925926,0.108241652924814,0.999899701322449

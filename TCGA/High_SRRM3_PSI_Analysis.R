@@ -44,13 +44,14 @@ perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 
   message(sprintf("Found %d samples with high SRRM3 expression (>%.2f percentile)",
                  length(high_expression_samples), expression_threshold * 100))
   
-  # Filter clinical data for high expression samples
-  filtered_clinical <- clinical_data %>% filter(case_id %in% high_expression_samples)
+  # Filter data for high expression samples
+  filtered_clinical <- clinical_data %>%
+    filter(case_id %in% high_expression_samples)
   
-  # Retrieve PSI data only for high expression samples
+  # Get PSI data only for high SRRM3 expression samples
   psi_data <- get_psi_data(cancer_type, "SRRM3", sample_ids = high_expression_samples)
   
-  # Merge filtered clinical data and PSI data
+  # Merge filtered data
   merged_data <- inner_join(filtered_clinical, psi_data, by = "case_id")
   
   if (nrow(merged_data) < 10) {

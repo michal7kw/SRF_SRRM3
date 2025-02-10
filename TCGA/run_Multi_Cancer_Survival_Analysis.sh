@@ -1,4 +1,24 @@
 #!/bin/bash
+
+###############################################################################
+# Multi-Cancer Survival Analysis SLURM Job Script
+# 
+# This script performs survival analysis across multiple cancer types in parallel
+# using SLURM array jobs. For each cancer type, it runs R-based survival analysis
+# comparing high vs low SRRM3 expression/PSI values.
+#
+# Input Files:
+# - Multi_Cancer_Survival_Analysis.R: Main R analysis script
+# - Clinical data files for each cancer type in TCGA format
+# - Expression/PSI data files for each cancer type
+#
+# Output Files:
+# - Individual results: results/<CANCER_TYPE>_results.rds 
+# - Combined analysis: results/multi_cancer_analysis/*
+# - Log files: logs/Multi_Cancer_Survival_Analysis_*.{err,out}
+# - Resource monitoring: logs/resources_*.log
+###############################################################################
+
 #SBATCH --job-name=Multi_Cancer_Survival
 #SBATCH --account=kubacki.michal
 #SBATCH --mem=64GB
@@ -18,20 +38,20 @@ conda activate snakemake
 # Set working directory
 cd /beegfs/scratch/ric.broccoli/kubacki.michal/SRF_SRRM3/TCGA/
 
-# Create necessary directories
+# Create necessary directories for outputs and temporary files
 mkdir -p logs
 mkdir -p results
 mkdir -p cache
 
-# Set R environment variables for better performance
-export R_MAX_NUM_DLLS=150
-export R_GC_MEM_GROW=3
-export R_ENABLE_JIT=3
-export OMP_NUM_THREADS=$SLURM_NTASKS
-export OPENBLAS_NUM_THREADS=$SLURM_NTASKS
-export MKL_NUM_THREADS=$SLURM_NTASKS
+# Set R environment variables for optimal performance
+export R_MAX_NUM_DLLS=150          # Increase DLL limit
+export R_GC_MEM_GROW=3             # Memory growth factor
+export R_ENABLE_JIT=3              # Enable JIT compilation
+export OMP_NUM_THREADS=$SLURM_NTASKS       # Set thread count
+export OPENBLAS_NUM_THREADS=$SLURM_NTASKS  # OpenBLAS threads
+export MKL_NUM_THREADS=$SLURM_NTASKS       # MKL threads
 
-# Function to monitor resource usage
+# Function to monitor system resource usage
 monitor_resources() {
     while true; do
         echo "$(date): Memory usage: $(free -h)"
@@ -44,10 +64,10 @@ monitor_resources() {
 monitor_resources > "logs/resources_${SLURM_ARRAY_TASK_ID}.log" &
 MONITOR_PID=$!
 
-# Define cancer types array
+# Define array of cancer types to analyze
 declare -a CANCER_TYPES=("BRCA" "ACC" "UVM" "SKCM" "LGG" "GBM")
 
-# Get the cancer type for this array job
+# Get the cancer type for this specific array job
 CANCER_TYPE=${CANCER_TYPES[$SLURM_ARRAY_TASK_ID]}
 
 echo "Starting analysis for ${CANCER_TYPE} at $(date)"
@@ -55,7 +75,7 @@ echo "Starting analysis for ${CANCER_TYPE} at $(date)"
 # Create a temporary R script for this specific array job
 TEMP_SCRIPT="temp_analysis_${SLURM_ARRAY_TASK_ID}.R"
 
-# Create the R script for this specific cancer type
+# Generate R script with cancer-type specific analysis
 cat << EOF > temp_analysis_${SLURM_ARRAY_TASK_ID}.R
 # Load required libraries and set options
 options(run.main=FALSE)
@@ -64,10 +84,10 @@ options(error = function() traceback(2))
 options(future.globals.maxSize = 8000 * 1024^2)
 options(mc.cores = parallel::detectCores() - 1)
 
-# Source the analysis script
+# Source the main analysis script
 source("Multi_Cancer_Survival_Analysis.R")
 
-# Create directories
+# Create output directories if they don't exist
 if (!dir.exists("results")) dir.create("results", recursive = TRUE)
 if (!dir.exists("cache")) dir.create("cache", recursive = TRUE)
 
@@ -97,16 +117,17 @@ tryCatch({
 cat(sprintf("\nCompleted analysis for %s\n", "$CANCER_TYPE"))
 EOF
 
-# Add this before running the R script
+# Create setup script to install required R packages
 cat << EOF > setup.R
 if (!require("BiocManager", quietly = TRUE))
     install.packages("BiocManager")
 BiocManager::install("sparseMatrixStats")
 EOF
 
+# Run setup script to ensure dependencies are installed
 R --vanilla < setup.R
 
-# Run the R script with increased memory limit
+# Run the analysis script with increased memory limit
 R --vanilla --max-ppsize=500000 < temp_analysis_${SLURM_ARRAY_TASK_ID}.R
 
 echo "Completed analysis for ${CANCER_TYPE} at $(date)"
@@ -114,11 +135,12 @@ echo "Completed analysis for ${CANCER_TYPE} at $(date)"
 # Clean up temporary script
 rm temp_analysis_${SLURM_ARRAY_TASK_ID}.R
 
-# Kill the resource monitor
+# Kill the resource monitoring process
 kill $MONITOR_PID
 
-# If this is the last array job, combine all results
+# If this is the last array job (index 4), combine all results
 if [ $SLURM_ARRAY_TASK_ID -eq 4 ]; then
+    # Create R script to combine results
     cat << EOF > combine_results.R
     # Load required libraries
     library(tidyverse)
@@ -128,7 +150,7 @@ if [ $SLURM_ARRAY_TASK_ID -eq 4 ]; then
     # Source the analysis script
     source("Multi_Cancer_Survival_Analysis.R")
     
-    # Create output directory
+    # Create output directory for combined results
     dir.create("results/multi_cancer_analysis", recursive = TRUE, showWarnings = FALSE)
     
     # List all individual result files

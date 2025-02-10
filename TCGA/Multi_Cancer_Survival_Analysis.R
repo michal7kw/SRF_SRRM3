@@ -140,12 +140,17 @@ get_expression_data <- function(cancer_type, gene_name) {
 }
 
 # Function to get PSI data
-get_psi_data <- function(cancer_type, gene_name = "SRRM3") {
+get_psi_data <- function(cancer_type, gene_name = "SRRM3", sample_ids = NULL) {
   cache_file <- file.path("cache", paste0("psi_data_", cancer_type, "_", gene_name, ".rds"))
   
   if (file.exists(cache_file)) {
     message("Loading cached PSI data...")
-    return(readRDS(cache_file))
+    psi_data <- readRDS(cache_file)
+    # If a subset of sample_ids was requested, filter the cached data
+    if (!is.null(sample_ids)) {
+      psi_data <- psi_data %>% filter(case_id %in% sample_ids)
+    }
+    return(psi_data)
   }
   
   # Define SRRM3 information
@@ -227,7 +232,7 @@ get_psi_data <- function(cancer_type, gene_name = "SRRM3") {
   
   # Calculate PSI values
   psi_data <- data.frame(
-    case_id = colData(rse_jxn)$tcga.tcga_barcode,
+    case_id = substr(colData(rse_jxn)$tcga.tcga_barcode, 1, 12),
     psi = sapply(seq_len(ncol(junction_counts)), function(i) {
       inclusion_reads <- sum(junction_counts[inclusion_jxns, i])
       exclusion_reads <- sum(junction_counts[exclusion_jxns, i])
@@ -253,6 +258,10 @@ get_psi_data <- function(cancer_type, gene_name = "SRRM3") {
   
   message(sprintf("Found %d samples with valid PSI values", nrow(psi_data)))
   
+  # If a subset of samples was requested, filter now before returning (but cache remains full)
+  if (!is.null(sample_ids)) {
+    psi_data <- psi_data %>% filter(case_id %in% sample_ids)
+  }
   saveRDS(psi_data, cache_file)
   return(psi_data)
 }

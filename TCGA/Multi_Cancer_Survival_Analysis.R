@@ -1,28 +1,52 @@
-# Load required libraries
+#####################################################################
+# Multi-Cancer Survival Analysis Script
+#####################################################################
+# This script performs survival analysis across multiple cancer types
+# using both PSI (Percent Spliced In) values and gene expression data.
+# It analyzes the relationship between SRRM3/SRRM4 molecular features
+# and patient survival outcomes using TCGA data.
+
+#####################################################################
+# Load Required Libraries
+#####################################################################
 suppressPackageStartupMessages({
-  library(dplyr)
-  library(survival)
-  library(survminer)
-  library(recount3)
-  library(biomaRt)
-  library(parallel)
-  library(BiocParallel)
-  library(TCGAbiolinks)
-  library(SummarizedExperiment)
-  library(tidyverse)
-  library(DESeq2)
-  library(httr)
-  library(retry)
-  library(futile.logger)
-  library(GenomicFeatures)
-  library(rtracklayer)
-  library(matrixStats)
-  library(sparseMatrixStats)
-  library(viridis)
-  library(data.table)
+  # Data manipulation and analysis
+  library(dplyr)        # Data manipulation and transformation
+  library(tidyverse)    # Collection of data science packages
+  library(data.table)   # Fast data manipulation
+  
+  # Survival analysis
+  library(survival)     # Core survival analysis functions
+  library(survminer)    # Survival analysis visualization
+  
+  # Genomic data handling
+  library(recount3)     # Access to RNA-seq data
+  library(biomaRt)      # Access to genomic annotations
+  library(TCGAbiolinks) # TCGA data access
+  library(SummarizedExperiment) # Container for genomic data
+  library(DESeq2)      # RNA-seq analysis
+  library(GenomicFeatures) # Genomic feature handling
+  library(rtracklayer)  # Import/export genomic tracks
+  
+  # Matrix operations
+  library(matrixStats)  # Matrix calculations
+  library(sparseMatrixStats) # Sparse matrix operations
+  
+  # Parallel processing
+  library(parallel)     # Base R parallel processing
+  library(BiocParallel) # Bioconductor parallel processing
+  
+  # Utilities
+  library(httr)         # HTTP requests
+  library(retry)        # Retry failed operations
+  library(futile.logger) # Logging functionality
+  library(viridis)      # Color palettes
 })
 
-# Set up parallel processing
+#####################################################################
+# Set Up Parallel Processing
+#####################################################################
+# Detect number of cores from SLURM environment or default to 1
 num_cores <- as.numeric(Sys.getenv("SLURM_NTASKS", unset = "1"))
 if (num_cores > 1) {
   message(sprintf("Setting up parallel processing with %d cores", num_cores))
@@ -31,12 +55,18 @@ if (num_cores > 1) {
   message("Running in single-core mode")
 }
 
-# Create necessary directories
-dir.create("results", showWarnings = FALSE)
-dir.create("cache", showWarnings = FALSE)
-dir.create("logs", showWarnings = FALSE)
+#####################################################################
+# Create Directory Structure
+#####################################################################
+# Create directories for storing results, cache, and logs
+dir.create("results", showWarnings = FALSE)  # Store analysis results
+dir.create("cache", showWarnings = FALSE)    # Store cached data
+dir.create("logs", showWarnings = FALSE)     # Store log files
 
-# Cache connection to Ensembl
+#####################################################################
+# Ensembl Connection Management
+#####################################################################
+# Cache connection to Ensembl to avoid repeated connections
 ensembl <- NULL
 get_ensembl_connection <- function() {
   if (is.null(ensembl)) {
@@ -45,10 +75,47 @@ get_ensembl_connection <- function() {
   return(ensembl)
 }
 
-# Function to get clinical data
+#####################################################################
+# Clinical Data Retrieval and Processing
+#####################################################################
+# Function to retrieve and clean clinical data from TCGA
 get_clinical_data <- function(cancer_type) {
   message(sprintf("Getting clinical data for %s", cancer_type))
-  clinical <- GDCquery_clinic(project = paste0("TCGA-", cancer_type), type = "clinical")
+
+  # Use tryCatch to handle potential errors
+  clinical <- tryCatch({
+    # Temporarily disable data.table auto-conversion
+    orig_datatable <- getOption("datatable.auto.index")
+    options(datatable.auto.index = FALSE)
+    
+    # Get clinical data
+    query <- GDCquery_clinic(project = paste0("TCGA-", cancer_type), type = "clinical")
+    
+    # Restore original data.table setting
+    options(datatable.auto.index = orig_datatable)
+    
+    # Convert to data.frame immediately
+    query <- as.data.frame(query)
+    
+    # Ensure all columns are properly formatted
+    for (col in colnames(query)) {
+      if (length(query[[col]]) != nrow(query)) {
+        message(sprintf("Fixing length mismatch in column: %s", col))
+        # Take the shorter length to avoid recycling
+        min_length <- min(length(query[[col]]), nrow(query))
+        query <- query[1:min_length, ]
+      }
+    }
+    
+    # Verify data integrity
+    if (!"submitter_id" %in% colnames(query)) {
+      stop("Required column 'submitter_id' not found in clinical data")
+    }
+    
+    query
+  }, error = function(e) {
+    stop(sprintf("Error retrieving clinical data for %s: %s", cancer_type, e$message))
+  })
   
   if (nrow(clinical) == 0) {
     stop(sprintf("No clinical data found for %s", cancer_type))
@@ -58,27 +125,31 @@ get_clinical_data <- function(cancer_type) {
   message("Available clinical columns:")
   message(paste(colnames(clinical), collapse=", "))
   
-  # Clean and prepare clinical data
-  clinical_clean <- clinical %>%
-    dplyr::transmute(
-      case_id = submitter_id,
-      vital_status = vital_status,
-      # Handle survival time with different column names
-      overall_survival = case_when(
-        !is.na(days_to_death) ~ as.numeric(days_to_death),
-        !is.na(days_to_last_follow_up) ~ as.numeric(days_to_last_follow_up),
-        TRUE ~ NA_real_
-      ),
-      # Handle different vital status formats
-      deceased = case_when(
-        tolower(vital_status) == "dead" ~ TRUE,
-        tolower(vital_status) == "alive" ~ FALSE,
-        TRUE ~ NA
-      )
-    ) %>%
-    dplyr::filter(!is.na(overall_survival), !is.na(deceased))
+  # Clean and standardize clinical data
+  clinical_clean <- tryCatch({
+    clinical %>%
+      dplyr::transmute(
+        case_id = submitter_id,
+        vital_status = vital_status,
+        # Calculate survival time using either death or last follow-up
+        overall_survival = case_when(
+          !is.na(days_to_death) ~ as.numeric(days_to_death),
+          !is.na(days_to_last_follow_up) ~ as.numeric(days_to_last_follow_up),
+          TRUE ~ NA_real_
+        ),
+        # Standardize vital status to boolean
+        deceased = case_when(
+          tolower(vital_status) == "dead" ~ TRUE,
+          tolower(vital_status) == "alive" ~ FALSE,
+          TRUE ~ NA
+        )
+      ) %>%
+      dplyr::filter(!is.na(overall_survival), !is.na(deceased))
+  }, error = function(e) {
+    stop(sprintf("Error processing clinical data: %s", e$message))
+  })
   
-  # Print summary of processed data
+  # Print summary statistics
   message(sprintf("Processed clinical data summary:"))
   message(sprintf("- Total patients: %d", nrow(clinical_clean)))
   message(sprintf("- Patients with death events: %d", sum(clinical_clean$deceased)))
@@ -87,10 +158,14 @@ get_clinical_data <- function(cancer_type) {
   return(clinical_clean)
 }
 
-# Function to get expression data
+#####################################################################
+# Expression Data Retrieval and Processing
+#####################################################################
+# Function to get gene expression data from TCGA via recount3
 get_expression_data <- function(cancer_type, gene_name) {
   cache_file <- file.path("cache", paste0("expression_data_", cancer_type, "_", gene_name, ".rds"))
   
+  # Check cache first
   if (file.exists(cache_file)) {
     message("Loading cached expression data...")
     return(readRDS(cache_file))
@@ -99,6 +174,8 @@ get_expression_data <- function(cancer_type, gene_name) {
   message("Getting expression data from recount3...")
   projects <- available_projects()
   
+  # Find specific project in recount3
+
   project_info <- subset(projects, 
                         project == toupper(cancer_type) &
                         file_source == "tcga" &
@@ -115,19 +192,19 @@ get_expression_data <- function(cancer_type, gene_name) {
     annotation = "gencode_v26"
   )
   
-  # Get gene expression
+  # Extract expression for specific gene
   gene_idx <- which(rowData(rse_gene)$gene_name == gene_name)[1]
   if (is.na(gene_idx)) {
     stop(sprintf("Gene %s not found in dataset", gene_name))
   }
   
-  # Create data frame
+  # Create data frame with expression values
   expression_data <- data.frame(
     case_id = substr(colData(rse_gene)$tcga.tcga_barcode, 1, 12),
     expression = assays(rse_gene)$counts[gene_idx, ]
   )
   
-  # Handle duplicates using dplyr
+  # Handle duplicate samples by averaging
   if (any(duplicated(expression_data$case_id))) {
     expression_data <- expression_data %>%
       group_by(case_id) %>%
@@ -139,7 +216,10 @@ get_expression_data <- function(cancer_type, gene_name) {
   return(expression_data)
 }
 
-# Function to get PSI data
+#####################################################################
+# PSI (Percent Spliced In) Data Retrieval and Processing
+#####################################################################
+# Function to calculate PSI values for specific exons
 get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
   cache_file <- file.path("cache", paste0("psi_data_", cancer_type, "_", gene_name, ".rds"))
   
@@ -148,7 +228,7 @@ get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
     return(readRDS(cache_file))
   }
   
-  # Define SRRM3 information
+    # Define genomic coordinates for SRRM3 exon 15
   SRRM3_INFO <- list(
     gene = list(
       name = "SRRM3",
@@ -166,6 +246,7 @@ get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
   message("Getting junction data from recount3...")
   projects <- available_projects()
   
+  # Find specific project
   project_info <- subset(projects, 
                         project == toupper(cancer_type) &
                         file_source == "tcga" &
@@ -176,7 +257,8 @@ get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
     print(subset(projects, file_source == "tcga" & project_type == "data_sources"))
     stop("Could not find unique project for ", cancer_type)
   }
-  
+
+    # Get junction data
   message("Creating RSE object...")
   rse_jxn <- create_rse(
     project_info[1, ],
@@ -185,11 +267,10 @@ get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
     verbose = TRUE
   )
   
-  # Get junction data
   junction_counts <- assay(rse_jxn)
   jxn_coords <- rowRanges(rse_jxn)
   
-  # Find relevant junctions
+  # Find junctions in SRRM3 region
   message("Finding relevant junctions...")
   srrm3_region <- which(
     start(jxn_coords) >= (SRRM3_INFO$exon15$start - 10000) &
@@ -203,11 +284,11 @@ get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
   
   message(sprintf("Found %d junctions in SRRM3 region", length(srrm3_region)))
   
-  # Get relevant junctions
+  # Extract relevant junctions
   jxn_coords <- jxn_coords[srrm3_region]
   junction_counts <- junction_counts[srrm3_region, ]
   
-  # Find inclusion and exclusion junctions
+  # Identify inclusion and exclusion junctions
   inclusion_jxns <- which(
     (abs(end(jxn_coords) - SRRM3_INFO$exon15$start) <= 5) |
     (abs(start(jxn_coords) - SRRM3_INFO$exon15$end) <= 5)
@@ -225,7 +306,7 @@ get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
     stop("Could not find both inclusion and exclusion junctions")
   }
   
-  # Calculate PSI values
+  # Calculate PSI values for each sample
   psi_data <- data.frame(
     case_id = colData(rse_jxn)$tcga.tcga_barcode,
     psi = sapply(seq_len(ncol(junction_counts)), function(i) {
@@ -233,7 +314,7 @@ get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
       exclusion_reads <- sum(junction_counts[exclusion_jxns, i])
       total_reads <- inclusion_reads + exclusion_reads
       
-      if(total_reads >= 10) {
+      if(total_reads >= 10) {  # Minimum read coverage threshold
         return((inclusion_reads / total_reads) * 100)
       } else {
         return(NA)
@@ -241,10 +322,10 @@ get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
     })
   )
   
-  # Clean case IDs to match TCGA format
+  # Clean and format data
   psi_data$case_id <- substr(psi_data$case_id, 1, 12)
   
-  # Remove any NA values and handle duplicates
+  # Remove NA values and handle duplicates
   psi_data <- psi_data %>%
     filter(!is.na(psi)) %>%
     group_by(case_id) %>%
@@ -263,12 +344,15 @@ get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
   return(psi_data)
 }
 
-# Update get_gene_info function
+#####################################################################
+# Gene Information Retrieval
+#####################################################################
+# Function to get gene coordinates and information from Ensembl
 get_gene_info <- function(gene_name) {
   # Connect to Ensembl
   ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
   
-  # Get gene coordinates
+  # Get gene coordinates and information
   gene_info <- getBM(
     attributes = c(
       "hgnc_symbol",
@@ -286,13 +370,13 @@ get_gene_info <- function(gene_name) {
     stop(paste("Could not find gene info for", gene_name))
   }
   
-  # If multiple entries exist, use the first one
+  # Handle multiple entries
   if (nrow(gene_info) > 1) {
     message("Multiple entries found for ", gene_name, ", using first entry")
     gene_info <- gene_info[1, ]
   }
   
-  # Add chromosome prefix if missing
+  # Standardize chromosome format
   if (!grepl("^chr", gene_info$chromosome_name)) {
     gene_info$chromosome_name <- paste0("chr", gene_info$chromosome_name)
   }
@@ -300,7 +384,10 @@ get_gene_info <- function(gene_name) {
   return(gene_info)
 }
 
-# Function to perform multi-cancer analysis
+#####################################################################
+# Multi-Cancer Analysis
+#####################################################################
+# Function to perform analysis across multiple cancer types
 perform_multi_cancer_analysis <- function(cancer_types, analysis_type = "PSI", gene = "SRRM3", grouping_method = "quartile") {
   results_list <- list()
   
@@ -317,13 +404,16 @@ perform_multi_cancer_analysis <- function(cancer_types, analysis_type = "PSI", g
   return(results_list)
 }
 
-# Function to perform survival analysis
+#####################################################################
+# Survival Analysis
+#####################################################################
+# Function to perform survival analysis for a single cancer type
 perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SRRM3", grouping_method = "quartile") {
   # Get clinical data
   clinical_data <- get_clinical_data(cancer_type)
   message(sprintf("Clinical data: %d samples", nrow(clinical_data)))
   
-  # Get molecular data based on data type
+  # Get molecular data (PSI or expression)
   tryCatch({
     molecular_data <- if (data_type == "PSI") {
       get_psi_data(cancer_type, gene)
@@ -355,6 +445,7 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
     # Group samples based on molecular values
     value_col <- if(data_type == "PSI") "psi" else "expression"
     
+    # Perform grouping based on specified method
     if (grouping_method == "quartile") {
       quartiles <- quantile(merged_data[[value_col]], probs = c(0.25, 0.75), na.rm = TRUE)
       if (quartiles[1] != quartiles[2]) {  # Check if quartiles are different
@@ -442,7 +533,10 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
   })
 }
 
-# Main analysis
+#####################################################################
+# Main Analysis Execution
+#####################################################################
+# Initialize variables and results storage
 cancer_type <- NULL
 results_list <- list()  # Initialize results list at the top level
 

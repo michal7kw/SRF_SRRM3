@@ -3,134 +3,157 @@
 ###############################################################################
 # High SRRM3 PSI Analysis SLURM Job Script
 #
-# This script performs PSI (Percent Spliced In) analysis on samples with high
-# SRRM3 expression across multiple cancer types using SLURM array jobs. For each
-# cancer type, it identifies samples in the top 75th percentile of SRRM3 expression
-# and analyzes their splicing patterns.
-#
-# Input Files:
-# - High_SRRM3_PSI_Analysis.R: Main R analysis script
-# - Clinical data files for each cancer type in TCGA format
-# - Expression data files for each cancer type
-# - PSI data files for each cancer type
-#
-# Output Files:
-# - Individual results: results/high_srrm3_analysis/<CANCER_TYPE>_summary.csv
-# - Combined results: results/high_srrm3_analysis/combined_summary.csv
-# - Log files: logs/High_SRRM3_PSI_Analysis_*.{err,out}
+# This script performs PSI analysis on samples with high SRRM3 expression across
+# multiple cancer types using SLURM array jobs.
 ###############################################################################
 
-# SLURM job configuration
 #SBATCH --job-name=High_SRRM3_PSI
 #SBATCH --account=kubacki.michal
-#SBATCH --mem=64GB                # Memory allocation
-#SBATCH --time=24:00:00           # Maximum runtime
-#SBATCH --nodes=1                 # Use one node
-#SBATCH --ntasks=32               # Number of CPU cores
-#SBATCH --mail-type=ALL           # Email notifications
+#SBATCH --mem=64GB
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=32
+#SBATCH --mail-type=ALL
 #SBATCH --mail-user=kubacki.michal@hsr.it
-#SBATCH --error="logs/High_SRRM3_PSI_Analysis_%a.err"  # Error log path
-#SBATCH --output="logs/High_SRRM3_PSI_Analysis_%a.out" # Output log path
-#SBATCH --array=0-5               # Array job for 6 cancer types
+#SBATCH --error="logs/High_SRRM3_PSI_Analysis_%a.err"
+#SBATCH --output="logs/High_SRRM3_PSI_Analysis_%a.out"
+#SBATCH --array=0-5
 
 # Load required modules and activate conda environment
 source /opt/common/tools/ric.cosr/miniconda3/bin/activate
-conda activate snakemake  # Activate the snakemake conda environment
+conda activate snakemake
 
-# Set working directory to project location
+# Set working directory
 cd /beegfs/scratch/ric.broccoli/kubacki.michal/SRF_SRRM3/TCGA/
 
-# Create necessary directories for outputs and temporary files
-mkdir -p logs    # Directory for log files
-mkdir -p results/high_srrm3_analysis # Directory for analysis results
-mkdir -p cache   # Directory for cached data
+# Create necessary directories
+mkdir -p logs
+mkdir -p results/high_srrm3_analysis
+mkdir -p cache
 
-# Configure R environment for optimal performance
-export R_MAX_NUM_DLLS=150          # Increase DLL limit
-export R_GC_MEM_GROW=3             # Memory growth factor
-export R_ENABLE_JIT=3              # Enable JIT compilation
-export OMP_NUM_THREADS=$SLURM_NTASKS       # Set thread count
-export OPENBLAS_NUM_THREADS=$SLURM_NTASKS  # OpenBLAS threads
-export MKL_NUM_THREADS=$SLURM_NTASKS       # MKL threads
+# Set R environment variables
+export R_MAX_NUM_DLLS=150
+export R_GC_MEM_GROW=3
+export R_ENABLE_JIT=3
+export OMP_NUM_THREADS=$SLURM_NTASKS
+export OPENBLAS_NUM_THREADS=$SLURM_NTASKS
+export MKL_NUM_THREADS=$SLURM_NTASKS
 
-# Define array of cancer types to analyze
+# Function to monitor system resource usage
+monitor_resources() {
+    while true; do
+        echo "$(date): Memory usage: $(free -h)"
+        echo "$(date): CPU usage: $(top -bn1 | head -n 3)"
+        sleep 300
+    done
+}
+
+# Start resource monitoring
+monitor_resources > "logs/resources_high_srrm3_${SLURM_ARRAY_TASK_ID}.log" &
+MONITOR_PID=$!
+
+# Define cancer types
 declare -a CANCER_TYPES=("BRCA" "ACC" "UVM" "SKCM" "LGG" "GBM")
 
-# Get the cancer type for this specific array job
+# Get current cancer type
 CANCER_TYPE=${CANCER_TYPES[$SLURM_ARRAY_TASK_ID]}
 
 echo "Starting high SRRM3 PSI analysis for ${CANCER_TYPE} at $(date)"
 
-# Create temporary R script for this specific array job
-cat << EOF > temp_high_srrm3_analysis_${SLURM_ARRAY_TASK_ID}.R
-# Set R options for better error handling and performance
+# Create temporary R script
+cat << 'EOF' > "temp_high_srrm3_analysis_${SLURM_ARRAY_TASK_ID}.R"
+# Set options
 options(run.main=FALSE)
 options(verbose = TRUE)
 options(error = function() traceback(2))
-options(future.globals.maxSize = 8000 * 1024^2)  # Increase memory limit
-options(mc.cores = parallel::detectCores() - 1)  # Use available cores
+options(future.globals.maxSize = 8000 * 1024^2)
+options(mc.cores = parallel::detectCores() - 1)
 
-# Source the main analysis script containing the analysis functions
+# Source analysis script
 source("High_SRRM3_PSI_Analysis.R")
 
-# Run analysis with error handling
+# Run analysis
 tryCatch({
-  # Perform PSI analysis on samples with high SRRM3 expression
-  results <- perform_high_srrm3_psi_analysis(
-    cancer_type = "$CANCER_TYPE",  # Current cancer type
-    expression_threshold = 0.75    # Analyze top 25% of SRRM3 expression
-  )
-  
-  # Check if results were generated
-  if (!is.null(results)) {
-    message("Analysis completed successfully")
-  } else {
-    message("No results generated")
-  }
+    cancer_type <- Sys.getenv("CANCER_TYPE")
+    message(sprintf("\nAnalyzing %s", cancer_type))
+    
+    results <- perform_high_srrm3_psi_analysis(
+        cancer_type = cancer_type,
+        expression_threshold = 0.75
+    )
+    
+    if (!is.null(results)) {
+        message("Analysis completed successfully")
+    } else {
+        message("No results generated")
+        quit(status = 1)
+    }
 }, error = function(e) {
-  # Handle any errors that occur during analysis
-  message(sprintf("Error in analysis: %s", e$message))
-  quit(status = 1)  # Exit with error status
+    message(sprintf("Error in analysis: %s", e$message))
+    quit(status = 1)
 })
 EOF
 
-# Execute the R analysis script with increased memory limit
-R --vanilla --max-ppsize=500000 < temp_high_srrm3_analysis_${SLURM_ARRAY_TASK_ID}.R
+# Export cancer type for R script
+export CANCER_TYPE
+
+# Run R script
+R --vanilla --max-ppsize=500000 < "temp_high_srrm3_analysis_${SLURM_ARRAY_TASK_ID}.R"
+R_EXIT_CODE=$?
+
+# Check if R script succeeded
+if [ $R_EXIT_CODE -ne 0 ]; then
+    echo "Error: R script failed for ${CANCER_TYPE}"
+    exit 1
+fi
 
 echo "Completed analysis for ${CANCER_TYPE} at $(date)"
 
-# Clean up temporary R script
-rm temp_high_srrm3_analysis_${SLURM_ARRAY_TASK_ID}.R
+# Clean up
+rm "temp_high_srrm3_analysis_${SLURM_ARRAY_TASK_ID}.R"
+kill $MONITOR_PID
 
-# If this is the last array job (index 5), combine all results
+# Combine results if this is the last job
 if [ $SLURM_ARRAY_TASK_ID -eq 5 ]; then
     echo "Combining results from all cancer types..."
     
-    # Create R script to combine individual results
-    cat << EOF > combine_results.R
+    cat << 'EOF' > combine_results.R
     library(tidyverse)
     
-    # Define results directory
     results_dir <- "results/high_srrm3_analysis"
     
-    # Combine all summary files
+    # Combine summaries
     summaries <- list.files(results_dir, 
-                           pattern = "*_summary.csv", 
+                           pattern = "*_summary.csv",
                            full.names = TRUE) %>%
-      lapply(read.csv) %>%  # Read each summary file
-      bind_rows()           # Combine into single data frame
+        lapply(read.csv) %>%
+        bind_rows()
     
-    # Save combined summary
-    write.csv(summaries, 
-              file.path(results_dir, "combined_summary.csv"), 
+    # Add additional statistics
+    summaries <- summaries %>%
+        mutate(
+            psi_analysis_rate = analyzed_samples / high_expr_samples,
+            survival_ratio = median_survival_high / median_survival_low
+        )
+    
+    # Save combined results
+    write.csv(summaries,
+              file.path(results_dir, "combined_summary.csv"),
               row.names = FALSE)
     
-    message("Successfully combined results")
+    # Create summary visualization
+    p <- ggplot(summaries, aes(x = cancer_type)) +
+        geom_bar(aes(y = high_expr_samples), stat = "identity") +
+        geom_bar(aes(y = analyzed_samples), stat = "identity", alpha = 0.5) +
+        theme_minimal() +
+        labs(title = "Sample counts by cancer type",
+             y = "Number of samples",
+             x = "Cancer type") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggsave(file.path(results_dir, "sample_counts.pdf"), p, width = 10, height = 6)
 EOF
 
-    # Run the combination script
     R --vanilla < combine_results.R
-    
-    # Clean up combination script
     rm combine_results.R
 fi 

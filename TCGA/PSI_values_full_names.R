@@ -1,36 +1,36 @@
 ### Output #################################
-# "PSI_values_full_names.pdf"
-# "PSI_values_full_names.pdf"
-# "PSI_values_full_names.csv"
+# "PSI_values_full_names.pdf" - Violin plot of PSI distributions
+# "PSI_values_full_names.pdf" - Point plot of mean PSI values
+# "PSI_values_full_names.csv" - Summary statistics of PSI values
 ###########################################
 
-# Load required libraries
-library(recount3)
-library(GenomicRanges)
-library(dplyr)
-library(tidyr)
-library(ggplot2)
-library(ggrepel)
-library(SummarizedExperiment)
-library(progress)
-library(futile.logger)
-library(R.utils)
-library(viridis)
+# Load required libraries for data processing and visualization
+library(recount3)        # For accessing TCGA data
+library(GenomicRanges)   # For genomic coordinate operations
+library(dplyr)           # For data manipulation
+library(tidyr)           # For data tidying
+library(ggplot2)         # For creating visualizations
+library(ggrepel)         # For improved text labels in plots
+library(SummarizedExperiment) # For working with RNA-seq data
+library(progress)        # For progress tracking
+library(futile.logger)   # For logging operations
+library(R.utils)         # For utility functions
+library(viridis)         # For color scales in plots
 
-# Source common theme
+# Source common theme for consistent plot styling
 source("common_theme.R")
 
-# Set up logging
+# Set up logging to track script execution
 flog.appender(appender.file("./logs/PSI_values_full_names.log"))
 flog.threshold(DEBUG)
 
-# Define cache directory
+# Define cache directory to store intermediate results
 CACHE_DIR <- "../cache"
 if (!dir.exists(CACHE_DIR)) {
   dir.create(CACHE_DIR)
 }
 
-# Function to get cached data
+# Function to get cached data to avoid redundant computations
 get_cached_data <- function(cache_file) {
   if (file.exists(cache_file)) {
     flog.info("Loading cached data from %s", cache_file)
@@ -39,13 +39,13 @@ get_cached_data <- function(cache_file) {
   return(NULL)
 }
 
-# Function to save cached data
+# Function to save processed data to cache for future use
 save_cached_data <- function(data, cache_file) {
   flog.info("Saving data to cache: %s", cache_file)
   saveRDS(data, cache_file)
 }
 
-# Define SRRM3 information (keep the same as in GTEx script)
+# Define SRRM3 gene and exon 15 information for analysis
 SRRM3_INFO <- list(
   gene = list(
     name = "SRRM3",
@@ -59,23 +59,23 @@ SRRM3_INFO <- list(
     length = 79
   ),
   transcripts = list(
-    with_exon15 = "NM_001291831.2",    # 16 exons
-    without_exon15 = "NM_001110199.3"   # 15 exons
+    with_exon15 = "NM_001291831.2",    # Transcript including exon 15
+    without_exon15 = "NM_001110199.3"   # Transcript excluding exon 15
   )
 )
 
-# Function to find relevant junctions for exon 15
+# Function to identify relevant splicing junctions around exon 15
 find_exon15_junctions <- function(jxn_coords) {
   exon_start <- SRRM3_INFO$exon15$start
   exon_end <- SRRM3_INFO$exon15$end
   
-  # Debug coordinates
+  # Debug coordinates for troubleshooting
   flog.debug("Looking for junctions around exon 15: %d-%d", exon_start, exon_end)
   
-  # Find upstream junction (ending at exon start)
+  # Find upstream junctions (ending at exon start)
   upstream_jxns <- which(abs(end(jxn_coords) - exon_start) <= 5)  # Allow 5bp flexibility
   
-  # Find downstream junction (starting at exon end)
+  # Find downstream junctions (starting at exon end)
   downstream_jxns <- which(abs(start(jxn_coords) - exon_end) <= 5)  # Allow 5bp flexibility
   
   # Find exclusion junctions (those that skip exon 15)
@@ -84,7 +84,7 @@ find_exon15_junctions <- function(jxn_coords) {
     end(jxn_coords) > (exon_end + 5)
   )
   
-  # Debug junction coordinates
+  # Log junction coordinates for debugging
   if(length(upstream_jxns) > 0) {
     flog.debug("Upstream junction coordinates:")
     for(i in upstream_jxns) {
@@ -124,12 +124,12 @@ find_exon15_junctions <- function(jxn_coords) {
   ))
 }
 
-# Modified create_rse_safe function with caching
+# Function to create RangedSummarizedExperiment (RSE) objects with caching
 create_rse_safe <- function(project_info) {  
   # Create cache filename based on project info
   cache_file <- file.path(CACHE_DIR, paste0("rse_", project_info$project, ".rds"))
   
-  # Check cache first
+  # Check cache first to avoid redundant processing
   cached_data <- get_cached_data(cache_file)
   if (!is.null(cached_data)) {
     return(cached_data)
@@ -138,7 +138,7 @@ create_rse_safe <- function(project_info) {
   tryCatch({
     flog.info("Creating RSE for project: %s", project_info$project)
     
-    # Create region around exon 15
+    # Create genomic region around exon 15
     region <- GRanges(
       seqnames = SRRM3_INFO$gene$chr,
       ranges = IRanges(
@@ -147,9 +147,10 @@ create_rse_safe <- function(project_info) {
       )
     )
     
-    # Use UNIQUE junction format for GTEx and TCGA
+    # Use UNIQUE junction format for GTEx and TCGA data
     jxn_format <- if(project_info$file_source %in% c("gtex", "tcga")) "UNIQUE" else "ALL"
     
+    # Create RSE object for junction data
     rse <- create_rse(
       project_info,
       type = "jxn",
@@ -157,7 +158,7 @@ create_rse_safe <- function(project_info) {
       verbose = TRUE
     )
     
-    # Filter to relevant region
+    # Filter to relevant genomic region
     relevant_rows <- which(
       as.character(seqnames(rowRanges(rse))) == as.character(seqnames(region)) &
         start(rowRanges(rse)) >= (start(region)) &
@@ -169,6 +170,7 @@ create_rse_safe <- function(project_info) {
       return(NULL)
     }
     
+    # Create filtered RSE object
     rse_filtered <- rse[relevant_rows, ]
     rm(rse)
     gc()
@@ -183,11 +185,11 @@ create_rse_safe <- function(project_info) {
   })
 }
 
-# Modified calculate_exon15_psi function with caching
+# Function to calculate Percent Spliced In (PSI) values for exon 15
 calculate_exon15_psi <- function(rse) {
   if(is.null(rse)) return(NULL)
   
-  # Create cache filename based on RSE object characteristics
+  # Create cache key based on RSE characteristics
   cache_key <- digest::digest(list(
     coords = as.data.frame(rowRanges(rse)),
     counts = assay(rse)
@@ -200,11 +202,11 @@ calculate_exon15_psi <- function(rse) {
     return(cached_data)
   }
   
-  # Get junction counts
+  # Get junction counts from RSE object
   junction_counts <- assay(rse)
   jxn_coords <- rowRanges(rse)
   
-  # Find relevant junctions
+  # Find relevant junctions for PSI calculation
   junctions <- find_exon15_junctions(jxn_coords)
   
   if(length(junctions$inclusion) == 0 || length(junctions$exclusion) == 0) {
@@ -219,7 +221,7 @@ calculate_exon15_psi <- function(rse) {
     exclusion_reads <- sum(junction_counts[junctions$exclusion, i])
     total_reads <- inclusion_reads + exclusion_reads
     
-    if(total_reads >= 10) {  # Minimum coverage threshold
+    if(total_reads >= 10) {  # Apply minimum coverage threshold
       psi <- (inclusion_reads / total_reads) * 100
       return(psi)
     } else {

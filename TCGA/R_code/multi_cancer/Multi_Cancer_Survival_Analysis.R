@@ -81,38 +81,51 @@ get_ensembl_connection <- function() {
 # Function to retrieve and clean clinical data from TCGA
 get_clinical_data <- function(cancer_type) {
   message(sprintf("Getting clinical data for %s", cancer_type))
-
-  # Use tryCatch to handle potential errors
+  
   clinical <- tryCatch({
-    # Temporarily disable data.table auto-conversion
-    orig_datatable <- getOption("datatable.auto.index")
-    options(datatable.auto.index = FALSE)
-    
     # Get clinical data
     query <- GDCquery_clinic(project = paste0("TCGA-", cancer_type), type = "clinical")
     
-    # Restore original data.table setting
-    options(datatable.auto.index = orig_datatable)
-    
-    # Convert to data.frame immediately
+    # Convert to data.frame and ensure consistent dimensions
     query <- as.data.frame(query)
     
-    # Ensure all columns are properly formatted
-    for (col in colnames(query)) {
-      if (length(query[[col]]) != nrow(query)) {
-        message(sprintf("Fixing length mismatch in column: %s", col))
-        # Take the shorter length to avoid recycling
-        min_length <- min(length(query[[col]]), nrow(query))
-        query <- query[1:min_length, ]
-      }
-    }
-    
-    # Verify data integrity
-    if (!"submitter_id" %in% colnames(query)) {
+    # Create a new data frame with submitter_id as reference
+    if (!"submitter_id" %in% names(query)) {
       stop("Required column 'submitter_id' not found in clinical data")
     }
     
-    query
+    # Create new data frame with correct dimensions
+    new_data <- data.frame(submitter_id = query$submitter_id, 
+                          stringsAsFactors = FALSE)
+    
+    # Add other columns with proper length handling
+    for (col in setdiff(names(query), "submitter_id")) {
+      if (is.null(query[[col]])) {
+        new_data[[col]] <- NA
+        next
+      }
+      
+      col_data <- query[[col]]
+      target_length <- nrow(new_data)
+      
+      # Handle different length scenarios
+      if (length(col_data) != target_length) {
+        message(sprintf("Fixing column %s: length %d != expected rows %d", 
+                       col, length(col_data), target_length))
+        
+        if (length(col_data) > target_length) {
+          new_data[[col]] <- col_data[1:target_length]
+        } else if (length(col_data) == 1) {
+          new_data[[col]] <- rep(col_data, target_length)
+        } else {
+          new_data[[col]] <- c(col_data, rep(NA, target_length - length(col_data)))
+        }
+      } else {
+        new_data[[col]] <- col_data
+      }
+    }
+    
+    new_data
   }, error = function(e) {
     stop(sprintf("Error retrieving clinical data for %s: %s", cancer_type, e$message))
   })

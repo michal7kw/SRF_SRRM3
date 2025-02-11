@@ -1,37 +1,44 @@
+# Set error handling to get more information
+options(error = function() {
+  traceback(3)
+  if (!interactive()) quit(status = 1)
+})
+
 # Set options
 options(run.main=FALSE)
 options(verbose = TRUE)
-options(error = function() traceback(2))
 options(future.globals.maxSize = 8000 * 1024^2)
 options(mc.cores = parallel::detectCores() - 1)
 
-# Load required libraries
-suppressPackageStartupMessages({
-  library(dplyr)
-  library(survival)
-  library(survminer)
-  library(recount3)
-  library(biomaRt)
-  library(parallel)
-  library(BiocParallel)
-  library(TCGAbiolinks)
-  library(SummarizedExperiment)
-  library(tidyverse)
-  library(DESeq2)
-  library(httr)
-  library(retry)
-  library(futile.logger)
-  library(GenomicFeatures)
-  library(rtracklayer)
-  library(matrixStats)
-  library(sparseMatrixStats)
-  library(viridis)
-  library(data.table)
-})
+# Load required libraries with error checking
+required_packages <- c(
+  "dplyr", "survival", "survminer", "recount3", "biomaRt",
+  "parallel", "BiocParallel", "TCGAbiolinks", "SummarizedExperiment",
+  "tidyverse", "DESeq2", "httr", "retry", "futile.logger",
+  "GenomicFeatures", "rtracklayer", "matrixStats", "sparseMatrixStats",
+  "viridis", "data.table", "R.utils"
+)
 
-# Source analysis scripts
-source("Multi_Cancer_Survival_Analysis.R")  # Source this first as it contains base functions
-source("High_SRRM3_PSI_Analysis.R")        # Source this second as it depends on the first
+for (pkg in required_packages) {
+  if (!require(pkg, character.only = TRUE)) {
+    stop(sprintf("Required package '%s' is not installed", pkg))
+  }
+}
+
+# Source analysis scripts with error checking
+for (script in c("./R_code/multi_cancer/Multi_Cancer_Survival_Analysis.R", "./R_code/multi_cancer_PSI_high_expression/High_SRRM3_PSI_Analysis.R")) {
+  message(sprintf("Sourcing %s...", script))
+  if (!file.exists(script)) {
+    stop(sprintf("Script file '%s' not found", script))
+  }
+  source(script)
+  message(sprintf("%s sourced successfully", script))
+}
+
+# Verify function exists
+if (!exists("perform_high_srrm3_psi_analysis")) {
+  stop("perform_high_srrm3_psi_analysis function not defined after sourcing scripts")
+}
 
 # Run analysis
 tryCatch({
@@ -51,5 +58,7 @@ tryCatch({
     }
 }, error = function(e) {
     message(sprintf("Error in analysis: %s", e$message))
+    message("Traceback:")
+    print(sys.calls())
     quit(status = 1)
 })

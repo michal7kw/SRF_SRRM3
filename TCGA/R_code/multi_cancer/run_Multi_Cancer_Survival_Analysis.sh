@@ -85,7 +85,7 @@ options(future.globals.maxSize = 8000 * 1024^2)
 options(mc.cores = parallel::detectCores() - 1)
 
 # Source the main analysis script
-source("Multi_Cancer_Survival_Analysis.R")
+source("./R_code/multi_cancer/Multi_Cancer_Survival_Analysis.R")
 
 # Create output directories if they don't exist
 if (!dir.exists("results")) dir.create("results", recursive = TRUE)
@@ -124,9 +124,6 @@ if (!require("BiocManager", quietly = TRUE))
 BiocManager::install("sparseMatrixStats")
 EOF
 
-# Run setup script to ensure dependencies are installed
-R --vanilla < setup.R
-
 # Run the analysis script with increased memory limit
 R --vanilla --max-ppsize=500000 < temp_analysis_${SLURM_ARRAY_TASK_ID}.R
 
@@ -148,7 +145,7 @@ if [ $SLURM_ARRAY_TASK_ID -eq 4 ]; then
     library(survminer)
     
     # Source the analysis script
-    source("Multi_Cancer_Survival_Analysis.R")
+    source("./R_code/multi_cancer/Multi_Cancer_Survival_Analysis.R")
     
     # Create output directory for combined results
     dir.create("results/multi_cancer_analysis", recursive = TRUE, showWarnings = FALSE)

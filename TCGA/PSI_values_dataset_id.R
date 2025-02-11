@@ -5,15 +5,20 @@
 ###########################################
 
 # Analysis of SRRM3 isoform expression across cancer types
-library(recount3)
-library(GenomicRanges)
-library(dplyr)
-library(tidyr)
-library(ggplot2)
-library(SummarizedExperiment)
-library(futile.logger)
-library(viridis)
-library(digest)
+# This script analyzes the Percent Spliced In (PSI) values for exon 15 of SRRM3
+# across different cancer types from TCGA data. It calculates the ratio of
+# inclusion vs exclusion of exon 15, which distinguishes between two SRRM3 isoforms.
+
+# Load required libraries
+library(recount3)        # For accessing TCGA data
+library(GenomicRanges)   # For genomic coordinate manipulation
+library(dplyr)           # For data manipulation
+library(tidyr)           # For data tidying
+library(ggplot2)         # For data visualization
+library(SummarizedExperiment) # For working with RNA-seq data
+library(futile.logger)   # For logging
+library(viridis)         # For color scales
+library(digest)          # For creating cache keys
 
 # Source common theme
 source("common_theme.R")

@@ -1,2 +1,0 @@
-"cancer_type","gene","total_samples","high_group","low_group","medium_group","logrank_pvalue","cox_pvalue","cox_hr"
-"UVM","SRRM4",80,40,40,0,0.0474190665461485,0.452367975346984,0.999991155665596

@@ -70,11 +70,7 @@ Rscript setup_packages.R
 
 # Run the analysis with working directory
 echo "Starting analysis for array task ${SLURM_ARRAY_TASK_ID} at $(date)"
-R --vanilla --max-ppsize=500000 -e "
-work_dir <- '$WORK_DIR'
-setwd(work_dir)
-source('Multi_Cancer_Survival_Analysis.R')
-"
+Rscript Multi_Cancer_Survival_Analysis.R --array-task-id=${SLURM_ARRAY_TASK_ID} --work-dir=${WORK_DIR}
 echo "Completed analysis for array task ${SLURM_ARRAY_TASK_ID} at $(date)"
 
 # Kill the resource monitoring process

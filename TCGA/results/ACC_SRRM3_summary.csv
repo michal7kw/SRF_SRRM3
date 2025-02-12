@@ -1,2 +1,0 @@
-"cancer_type","gene","total_samples","high_group","low_group","medium_group","logrank_pvalue","cox_pvalue","cox_hr"
-"ACC","SRRM3",79,40,39,0,0.292080255375418,0.342511111871191,1.00000028747328

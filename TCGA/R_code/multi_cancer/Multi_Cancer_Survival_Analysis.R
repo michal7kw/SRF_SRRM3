@@ -413,10 +413,12 @@ perform_multi_cancer_analysis <- function(cancer_types, analysis_type = "PSI", g
 # Function to perform survival analysis for a single cancer type
 perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SRRM3", grouping_method = "quartile") {
   # Get clinical data
+  message("\n=== Getting Clinical Data ===")
   clinical_data <- get_clinical_data(cancer_type)
   message(sprintf("Clinical data: %d samples", nrow(clinical_data)))
   
   # Get molecular data (PSI or expression)
+  message("\n=== Getting Molecular Data ===")
   tryCatch({
     molecular_data <- if (data_type == "PSI") {
       get_psi_data(cancer_type, gene)
@@ -430,6 +432,7 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
     }
     
     # Ensure IDs are in the same format before merging
+    message("\n=== Preparing Data for Merge ===")
     clinical_data$merge_id <- substr(clinical_data$case_id, 1, 12)
     molecular_data$merge_id <- substr(molecular_data$case_id, 1, 12)
     
@@ -437,16 +440,8 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
     message("First few clinical IDs: ", paste(head(clinical_data$merge_id), collapse=", "))
     message("First few molecular IDs: ", paste(head(molecular_data$merge_id), collapse=", "))
     
-    # Before merging clinical data, add this code:
-    clinical_data <- clinical_data %>%
-      filter(merge_id %in% molecular_data$merge_id)
-
-    molecular_data <- molecular_data %>%
-      filter(merge_id %in% clinical_data$merge_id)
-
-    # Now both datasets should have matching IDs before merging
-    
-    # Merge the data
+    # Merge the data directly
+    message("\n=== Merging Data ===")
     merged_data <- inner_join(clinical_data, molecular_data, by = "merge_id")
     message(sprintf("Merged data samples: %d", nrow(merged_data)))
     
@@ -455,11 +450,14 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
     }
     
     # Group samples based on molecular values
+    message("\n=== Grouping Samples ===")
     value_col <- if(data_type == "PSI") "psi" else "expression"
     
     # Perform grouping based on specified method
     if (grouping_method == "quartile") {
       quartiles <- quantile(merged_data[[value_col]], probs = c(0.25, 0.75), na.rm = TRUE)
+      message(sprintf("Quartiles: Q1=%.2f, Q3=%.2f", quartiles[1], quartiles[2]))
+      
       if (quartiles[1] != quartiles[2]) {  # Check if quartiles are different
         merged_data$group <- case_when(
           merged_data[[value_col]] <= quartiles[1] ~ "Low",
@@ -469,6 +467,7 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
       } else {
         # If quartiles are the same, use median split
         median_val <- median(merged_data[[value_col]], na.rm = TRUE)
+        message(sprintf("Using median split at %.2f", median_val))
         merged_data$group <- if_else(merged_data[[value_col]] > median_val, "High", "Low")
       }
     }
@@ -481,6 +480,7 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
     }
     
     # Print group sizes
+    message("\n=== Sample Distribution ===")
     message("Sample sizes per group:")
     print(table(merged_data$group))
     
@@ -551,18 +551,35 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
 
 # Main analysis execution
 main <- function() {
+  # Parse command line arguments
+  args <- commandArgs(trailingOnly = TRUE)
+  array_task_id <- -1
+  work_dir <- getwd()
+  
+  # Parse arguments
+  for (arg in args) {
+    if (grepl("^--array-task-id=", arg)) {
+      array_task_id <- as.numeric(sub("^--array-task-id=", "", arg))
+    } else if (grepl("^--work-dir=", arg)) {
+      work_dir <- sub("^--work-dir=", "", arg)
+    }
+  }
+  
+  # Set working directory
+  setwd(work_dir)
+  
   # Initialize results list
   results_list <- list()
   
-  # Get cancer type from SLURM array task ID
-  array_task_id <- as.numeric(Sys.getenv("SLURM_ARRAY_TASK_ID", unset = "-1"))
-  message(sprintf("Starting main function with array task ID: %d", array_task_id))
+  message(sprintf("\n=== Starting Analysis ==="))
+  message(sprintf("Array task ID: %d", array_task_id))
+  message(sprintf("Working directory: %s", work_dir))
   
   if (array_task_id >= 0) {
     cancer_types <- c("ACC", "UVM", "SKCM", "LGG", "GBM")
     if (array_task_id < length(cancer_types)) {
       cancer_type <- cancer_types[array_task_id + 1]
-      message(sprintf("\nProcessing cancer type: %s", cancer_type))
+      message(sprintf("\n=== Processing Cancer Type: %s ===", cancer_type))
       
       # Check if clinical data directory exists
       clinical_dir <- file.path(work_dir, "../../TCGA_clinical")
@@ -571,38 +588,68 @@ main <- function() {
         stop(sprintf("Clinical data directory not found: %s", clinical_dir))
       }
       
+      # Create necessary directories
+      message("\n=== Setting Up Directories ===")
+      for (dir in c(RESULTS_DIR, CACHE_DIR)) {
+        if (!dir.exists(dir)) {
+          dir.create(dir, recursive = TRUE)
+          message(sprintf("Created directory: %s", dir))
+        } else {
+          message(sprintf("Directory exists: %s", dir))
+        }
+      }
+      
       # Run each analysis type separately with its own error handling
+      message("\n=== Running Analyses ===")
       
       # 1. PSI Analysis for SRRM3
       tryCatch({
-        message("\nRunning SRRM3 PSI analysis...")
+        message("\n=== Running SRRM3 PSI Analysis ===")
         results_list[["SRRM3_PSI"]] <- perform_survival_analysis(cancer_type, "PSI", "SRRM3")
+        message("SRRM3 PSI analysis completed successfully")
       }, error = function(e) {
         message(sprintf("Error in SRRM3 PSI analysis: %s", e$message))
       })
       
       # 2. Expression Analysis for SRRM3
       tryCatch({
-        message("\nRunning SRRM3 expression analysis...")
+        message("\n=== Running SRRM3 Expression Analysis ===")
         results_list[["SRRM3_expression"]] <- perform_survival_analysis(cancer_type, "expression", "SRRM3")
+        message("SRRM3 expression analysis completed successfully")
       }, error = function(e) {
         message(sprintf("Error in SRRM3 expression analysis: %s", e$message))
       })
       
       # 3. Expression Analysis for SRRM4
       tryCatch({
-        message("\nRunning SRRM4 expression analysis...")
+        message("\n=== Running SRRM4 Expression Analysis ===")
         results_list[["SRRM4_expression"]] <- perform_survival_analysis(cancer_type, "expression", "SRRM4")
+        message("SRRM4 expression analysis completed successfully")
       }, error = function(e) {
         message(sprintf("Error in SRRM4 expression analysis: %s", e$message))
       })
       
-      # Save all results with absolute path
+      # Save all results
+      message("\n=== Saving Results ===")
       results_file <- file.path(RESULTS_DIR, sprintf("%s_results.rds", cancer_type))
-      saveRDS(results_list, results_file)
-      message(sprintf("Saved results to: %s", results_file))
+      if (length(results_list) > 0) {
+        saveRDS(results_list, results_file)
+        message(sprintf("Saved results to: %s", results_file))
+        
+        # Print summary of all analyses
+        message("\n=== Analysis Summary ===")
+        for (analysis_name in names(results_list)) {
+          if (!is.null(results_list[[analysis_name]])) {
+            message(sprintf("\n%s:", analysis_name))
+            print(results_list[[analysis_name]]$summary$group_sizes)
+          }
+        }
+      } else {
+        message("No results to save")
+      }
       
-      message(sprintf("\nCompleted all analyses for %s at %s", 
+      message(sprintf("\n=== Analysis Complete ==="))
+      message(sprintf("Completed all analyses for %s at %s", 
                      cancer_type, 
                      format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
     }

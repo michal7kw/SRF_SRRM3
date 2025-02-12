@@ -44,37 +44,64 @@ options(mc.cores = parallel::detectCores() - 1)
 get_clinical_data <- function(cancer_type) {
   message(sprintf("Getting clinical data for %s", cancer_type))
   
-  tryCatch({
-    # Get clinical data
-    clinical <- as.data.frame(GDCquery_clinic(project = paste0("TCGA-", cancer_type), type = "clinical"))
-    
-    if (nrow(clinical) == 0) {
-      stop(sprintf("No clinical data found for %s", cancer_type))
-    }
-    
-    # Clean and prepare clinical data
-    clinical_clean <- clinical %>%
-      dplyr::transmute(
-        case_id = submitter_id,
-        vital_status = vital_status,
-        overall_survival = case_when(
-          !is.na(days_to_death) ~ as.numeric(days_to_death),
-          !is.na(days_to_last_follow_up) ~ as.numeric(days_to_last_follow_up),
-          TRUE ~ NA_real_
-        ),
-        deceased = case_when(
-          tolower(vital_status) == "dead" ~ TRUE,
-          tolower(vital_status) == "alive" ~ FALSE,
-          TRUE ~ NA
-        )
-      ) %>%
-      dplyr::filter(!is.na(overall_survival), !is.na(deceased))
-    
-    return(clinical_clean)
-    
-  }, error = function(e) {
-    stop(sprintf("Error retrieving clinical data for %s: %s", cancer_type, e$message))
-  })
+  # Construct path to clinical data directory
+  clinical_dir <- file.path("../../TCGA_clinical", 
+                           sprintf("clinical.project-tcga-%s.2025-02-12", 
+                                 tolower(cancer_type)))
+  
+  # Check if directory exists
+  if (!dir.exists(clinical_dir)) {
+    stop(sprintf("Clinical data directory not found for %s", cancer_type))
+  }
+  
+  # Read clinical.tsv and follow_up.tsv files
+  clinical <- read.delim(file.path(clinical_dir, "clinical.tsv"), 
+                        sep="\t", stringsAsFactors=FALSE, na.strings="'--")
+  follow_up <- read.delim(file.path(clinical_dir, "follow_up.tsv"), 
+                         sep="\t", stringsAsFactors=FALSE, na.strings="'--")
+  
+  if (nrow(clinical) == 0) {
+    stop(sprintf("No clinical data found for %s", cancer_type))
+  }
+  
+  # Get the latest follow-up data for each patient
+  latest_follow_up <- follow_up %>%
+    group_by(case_submitter_id) %>%
+    summarize(
+      days_to_follow_up = max(days_to_follow_up, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    filter(!is.infinite(days_to_follow_up))  # Remove cases where all values were NA
+  
+  # Clean and prepare clinical data
+  clinical_clean <- clinical %>%
+    left_join(latest_follow_up, by = "case_submitter_id") %>%
+    dplyr::transmute(
+      case_id = case_submitter_id,
+      vital_status = vital_status,
+      # Calculate survival time using either death or last follow-up
+      overall_survival = case_when(
+        !is.na(days_to_death) ~ as.numeric(days_to_death),
+        !is.na(days_to_follow_up) ~ as.numeric(days_to_follow_up),
+        TRUE ~ NA_real_
+      ),
+      # Standardize vital status to boolean
+      deceased = case_when(
+        tolower(vital_status) == "dead" ~ TRUE,
+        tolower(vital_status) == "alive" ~ FALSE,
+        TRUE ~ NA
+      )
+    ) %>%
+    dplyr::filter(!is.na(overall_survival), !is.na(deceased))
+  
+  # Print summary statistics
+  message(sprintf("Processed clinical data summary:"))
+  message(sprintf("- Total patients: %d", nrow(clinical_clean)))
+  message(sprintf("- Patients with death events: %d", sum(clinical_clean$deceased)))
+  message(sprintf("- Median survival time: %.1f days", 
+                 median(clinical_clean$overall_survival)))
+  
+  return(clinical_clean)
 }
 
 #####################################################################
@@ -131,7 +158,7 @@ get_expression_data <- function(cancer_type, gene_name) {
   
   expression_data <- data.frame(
     case_id = substr(colData(rse_gene)$tcga.tcga_barcode, 1, 12),
-    expression = assays(rse_gene)$counts[gene_idx, ]
+    expression = assay(rse_gene, "raw_counts")[gene_idx, ]
   )
   
   message("Initial expression data dimensions: ", paste(dim(expression_data), collapse=" x "))
@@ -387,26 +414,40 @@ perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 
   })
 }
 
-# Get cancer type from environment variable
-cancer_type <- Sys.getenv("CANCER_TYPE")
-if (nchar(cancer_type) > 0) {
-  message(sprintf("\nAnalyzing %s", cancer_type))
-  
-  # Remove any corrupted cache files
-  cache_files <- list.files("cache", pattern = paste0(cancer_type, ".*\\.rds$"), full.names = TRUE)
-  for (file in cache_files) {
-    tryCatch({
-      data <- readRDS(file)
-    }, error = function(e) {
-      message("Removing corrupted cache file: ", file)
-      unlink(file)
-    })
-  }
-  
-  results <- perform_high_srrm3_psi_analysis(cancer_type, expression_threshold = 0.75)
-  
-  if (is.null(results)) {
-    message("No results generated")
-    quit(status = 1)
-  }
+#####################################################################
+# Main Function
+#####################################################################
+main <- function() {
+    # Get cancer type from environment variable
+    cancer_type <- Sys.getenv("CANCER_TYPE")
+    if (nchar(cancer_type) == 0) {
+        stop("CANCER_TYPE environment variable not set")
+    }
+    
+    message(sprintf("\nAnalyzing %s", cancer_type))
+    
+    # Remove any corrupted cache files
+    cache_files <- list.files("cache", pattern = paste0(cancer_type, ".*\\.rds$"), full.names = TRUE)
+    for (file in cache_files) {
+        tryCatch({
+            data <- readRDS(file)
+        }, error = function(e) {
+            message("Removing corrupted cache file: ", file)
+            unlink(file)
+        })
+    }
+    
+    results <- perform_high_srrm3_psi_analysis(cancer_type, expression_threshold = 0.75)
+    
+    if (is.null(results)) {
+        message("No results generated")
+        quit(status = 1)
+    }
+    
+    return(results)
+}
+
+# Execute main function if script is run directly
+if (sys.nframe() == 0) {
+    main()
 } 

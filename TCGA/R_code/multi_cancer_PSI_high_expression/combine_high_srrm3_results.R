@@ -6,7 +6,7 @@
 
 library(tidyverse)
 
-results_dir <- "results/high_srrm3_analysis"
+results_dir <- "results/"
 
 # Combine summaries
 summaries <- list.files(results_dir, 

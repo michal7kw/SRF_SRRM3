@@ -1,0 +1,6 @@
+case_id	case_submitter_id	project_id	relationship_age_at_diagnosis	relationship_gender	relationship_primary_diagnosis	relationship_type	relative_deceased	relative_smoker	relative_with_cancer_history	relatives_with_cancer_history_count
+029cc59c-60df-4411-a044-3a2eeee7b110	TCGA-V4-A9E5	TCGA-UVM	'--	'--	Leukemia	Brother	'--	'--	yes	'--
+029cc59c-60df-4411-a044-3a2eeee7b110	TCGA-V4-A9E5	TCGA-UVM	'--	'--	Prostate Cancer	Father	'--	'--	yes	'--
+15d19ccc-52b8-41f6-b1c1-2cc55691aed5	TCGA-V4-A9EY	TCGA-UVM	'--	'--	Melanoma	Brother	'--	'--	yes	'--
+5383fb57-69c2-4b34-af7f-c67208efb2b5	TCGA-V4-A9ET	TCGA-UVM	'--	'--	Melanoma	Mother	'--	'--	yes	'--
+94f3d9b0-0ee4-4f6a-a8ff-ce7a4d8fab76	TCGA-V4-A9F1	TCGA-UVM	'--	'--	Breast Cancer	Mother	'--	'--	yes	'--

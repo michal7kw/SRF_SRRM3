@@ -28,11 +28,11 @@ R --vanilla -e 'if (!require("R.utils")) install.packages("R.utils", repos="http
 R --vanilla -e 'if (!require("BiocManager")) install.packages("BiocManager", repos="https://cloud.r-project.org"); BiocManager::install("recount3")'
 
 # Set working directory
-cd /beegfs/scratch/ric.broccoli/kubacki.michal/SRF_SRRM3/TCGA/
+cd /beegfs/scratch/ric.broccoli/kubacki.michal/SRF_SRRM3/TCGA/multi_cancer_PSI_high_expression
 
 # Create necessary directories
 mkdir -p logs
-mkdir -p results/high_srrm3_analysis
+mkdir -p results
 mkdir -p cache
 
 # Set R environment variables
@@ -57,7 +57,7 @@ monitor_resources > "logs/resources_high_srrm3_${SLURM_ARRAY_TASK_ID}.log" &
 MONITOR_PID=$!
 
 # Define cancer types
-declare -a CANCER_TYPES=("ACC" "UVM" "SKCM" "LLG" "GBM")
+declare -a CANCER_TYPES=("ACC" "UVM" "SKCM" "LGG" "GBM")
 
 # Get current cancer type
 CANCER_TYPE=${CANCER_TYPES[$SLURM_ARRAY_TASK_ID]}
@@ -68,7 +68,7 @@ echo "Starting high SRRM3 PSI analysis for ${CANCER_TYPE} at $(date)"
 export CANCER_TYPE
 
 # Run R script directly
-R --vanilla --max-ppsize=500000 -f "./R_code/multi_cancer_PSI_high_expression/High_SRRM3_PSI_Analysis.R"
+R --vanilla --max-ppsize=500000 -f "./High_SRRM3_PSI_Analysis.R"
 R_EXIT_CODE=$?
 
 # Check if R script succeeded
@@ -85,5 +85,5 @@ kill $MONITOR_PID
 # Combine results if this is the last job
 if [ $SLURM_ARRAY_TASK_ID -eq 5 ]; then
     echo "Combining results from all cancer types..."
-    R --vanilla -f "./R_code/multi_cancer_PSI_high_expression/combine_high_srrm3_results.R"
+    R --vanilla -f "./combine_high_srrm3_results.R"
 fi 

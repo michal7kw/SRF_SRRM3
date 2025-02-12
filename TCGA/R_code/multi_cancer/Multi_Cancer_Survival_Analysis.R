@@ -44,6 +44,26 @@ suppressPackageStartupMessages({
 })
 
 #####################################################################
+# Setup and Configuration
+#####################################################################
+# Get working directory from environment or use current
+work_dir <- getwd()
+
+# Define paths
+RESULTS_DIR <- file.path(work_dir, "results")
+CACHE_DIR <- file.path(work_dir, "cache")
+LOGS_DIR <- file.path(work_dir, "logs")
+CLINICAL_DIR <- file.path(work_dir, "../../TCGA_clinical")
+
+# Create necessary directories
+for (dir in c(RESULTS_DIR, CACHE_DIR, LOGS_DIR)) {
+  if (!dir.exists(dir)) {
+    dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+    message(sprintf("Created directory: %s", dir))
+  }
+}
+
+#####################################################################
 # Set Up Parallel Processing
 #####################################################################
 # Detect number of cores from SLURM environment or default to 1
@@ -54,14 +74,6 @@ if (num_cores > 1) {
 } else {
   message("Running in single-core mode")
 }
-
-#####################################################################
-# Create Directory Structure
-#####################################################################
-# Create directories for storing results, cache, and logs
-dir.create("results", showWarnings = FALSE)  # Store analysis results
-dir.create("cache", showWarnings = FALSE)    # Store cached data
-dir.create("logs", showWarnings = FALSE)     # Store log files
 
 #####################################################################
 # Ensembl Connection Management
@@ -82,91 +94,67 @@ get_ensembl_connection <- function() {
 get_clinical_data <- function(cancer_type) {
   message(sprintf("Getting clinical data for %s", cancer_type))
   
-  clinical <- tryCatch({
-    # Get clinical data
-    query <- GDCquery_clinic(project = paste0("TCGA-", cancer_type), type = "clinical")
-    
-    # Convert to data.frame and ensure consistent dimensions
-    query <- as.data.frame(query)
-    
-    # Create a new data frame with submitter_id as reference
-    if (!"submitter_id" %in% names(query)) {
-      stop("Required column 'submitter_id' not found in clinical data")
-    }
-    
-    # Create new data frame with correct dimensions
-    new_data <- data.frame(submitter_id = query$submitter_id, 
-                          stringsAsFactors = FALSE)
-    
-    # Add other columns with proper length handling
-    for (col in setdiff(names(query), "submitter_id")) {
-      if (is.null(query[[col]])) {
-        new_data[[col]] <- NA
-        next
-      }
-      
-      col_data <- query[[col]]
-      target_length <- nrow(new_data)
-      
-      # Handle different length scenarios
-      if (length(col_data) != target_length) {
-        message(sprintf("Fixing column %s: length %d != expected rows %d", 
-                       col, length(col_data), target_length))
-        
-        if (length(col_data) > target_length) {
-          new_data[[col]] <- col_data[1:target_length]
-        } else if (length(col_data) == 1) {
-          new_data[[col]] <- rep(col_data, target_length)
-        } else {
-          new_data[[col]] <- c(col_data, rep(NA, target_length - length(col_data)))
-        }
-      } else {
-        new_data[[col]] <- col_data
-      }
-    }
-    
-    new_data
-  }, error = function(e) {
-    stop(sprintf("Error retrieving clinical data for %s: %s", cancer_type, e$message))
-  })
+  # Construct path to clinical data directory using absolute path
+  clinical_dir <- file.path(CLINICAL_DIR,
+                           sprintf("clinical.project-tcga-%s.2025-02-12", 
+                                 tolower(cancer_type)))
+  message(sprintf("Looking for clinical data in directory: %s", clinical_dir))
+  
+  # Check if directory exists
+  if (!dir.exists(clinical_dir)) {
+    stop(sprintf("Clinical data directory not found for %s: %s", cancer_type, clinical_dir))
+  }
+  
+  # List files in directory for debugging
+  message("Files in clinical directory:")
+  message(paste(list.files(clinical_dir), collapse="\n"))
+  
+  # Read clinical.tsv and follow_up.tsv files
+  clinical <- read.delim(file.path(clinical_dir, "clinical.tsv"), 
+                        sep="\t", stringsAsFactors=FALSE, na.strings="'--")
+  follow_up <- read.delim(file.path(clinical_dir, "follow_up.tsv"), 
+                         sep="\t", stringsAsFactors=FALSE, na.strings="'--")
   
   if (nrow(clinical) == 0) {
     stop(sprintf("No clinical data found for %s", cancer_type))
   }
   
-  # Print column names for debugging
-  message("Available clinical columns:")
-  message(paste(colnames(clinical), collapse=", "))
+  # Get the latest follow-up data for each patient
+  latest_follow_up <- follow_up %>%
+    group_by(case_submitter_id) %>%
+    summarize(
+      days_to_follow_up = max(days_to_follow_up, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    filter(!is.infinite(days_to_follow_up))  # Remove cases where all values were NA
   
-  # Clean and standardize clinical data
-  clinical_clean <- tryCatch({
-    clinical %>%
-      dplyr::transmute(
-        case_id = submitter_id,
-        vital_status = vital_status,
-        # Calculate survival time using either death or last follow-up
-        overall_survival = case_when(
-          !is.na(days_to_death) ~ as.numeric(days_to_death),
-          !is.na(days_to_last_follow_up) ~ as.numeric(days_to_last_follow_up),
-          TRUE ~ NA_real_
-        ),
-        # Standardize vital status to boolean
-        deceased = case_when(
-          tolower(vital_status) == "dead" ~ TRUE,
-          tolower(vital_status) == "alive" ~ FALSE,
-          TRUE ~ NA
-        )
-      ) %>%
-      dplyr::filter(!is.na(overall_survival), !is.na(deceased))
-  }, error = function(e) {
-    stop(sprintf("Error processing clinical data: %s", e$message))
-  })
+  # Clean and prepare clinical data
+  clinical_clean <- clinical %>%
+    left_join(latest_follow_up, by = "case_submitter_id") %>%
+    dplyr::transmute(
+      case_id = case_submitter_id,
+      vital_status = vital_status,
+      # Calculate survival time using either death or last follow-up
+      overall_survival = case_when(
+        !is.na(days_to_death) ~ as.numeric(days_to_death),
+        !is.na(days_to_follow_up) ~ as.numeric(days_to_follow_up),
+        TRUE ~ NA_real_
+      ),
+      # Standardize vital status to boolean
+      deceased = case_when(
+        tolower(vital_status) == "dead" ~ TRUE,
+        tolower(vital_status) == "alive" ~ FALSE,
+        TRUE ~ NA
+      )
+    ) %>%
+    dplyr::filter(!is.na(overall_survival), !is.na(deceased))
   
   # Print summary statistics
   message(sprintf("Processed clinical data summary:"))
   message(sprintf("- Total patients: %d", nrow(clinical_clean)))
   message(sprintf("- Patients with death events: %d", sum(clinical_clean$deceased)))
-  message(sprintf("- Median survival time: %.1f days", median(clinical_clean$overall_survival)))
+  message(sprintf("- Median survival time: %.1f days", 
+                 median(clinical_clean$overall_survival)))
   
   return(clinical_clean)
 }
@@ -176,7 +164,8 @@ get_clinical_data <- function(cancer_type) {
 #####################################################################
 # Function to get gene expression data from TCGA via recount3
 get_expression_data <- function(cancer_type, gene_name) {
-  cache_file <- file.path("cache", paste0("expression_data_", cancer_type, "_", gene_name, ".rds"))
+  cache_file <- file.path(CACHE_DIR, 
+                         paste0("expression_data_", cancer_type, "_", gene_name, ".rds"))
   
   # Check cache first
   if (file.exists(cache_file)) {
@@ -234,7 +223,8 @@ get_expression_data <- function(cancer_type, gene_name) {
 #####################################################################
 # Function to calculate PSI values for specific exons
 get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
-  cache_file <- file.path("cache", paste0("psi_data_", cancer_type, "_", gene_name, ".rds"))
+  cache_file <- file.path(CACHE_DIR, 
+                         paste0("psi_data_", cancer_type, "_", gene_name, ".rds"))
   
   if (file.exists(cache_file)) {
     message("Loading cached PSI data...")
@@ -447,6 +437,15 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
     message("First few clinical IDs: ", paste(head(clinical_data$merge_id), collapse=", "))
     message("First few molecular IDs: ", paste(head(molecular_data$merge_id), collapse=", "))
     
+    # Before merging clinical data, add this code:
+    clinical_data <- clinical_data %>%
+      filter(merge_id %in% molecular_data$merge_id)
+
+    molecular_data <- molecular_data %>%
+      filter(merge_id %in% clinical_data$merge_id)
+
+    # Now both datasets should have matching IDs before merging
+    
     # Merge the data
     merged_data <- inner_join(clinical_data, molecular_data, by = "merge_id")
     message(sprintf("Merged data samples: %d", nrow(merged_data)))
@@ -500,11 +499,9 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
       title = sprintf("%s survival by %s %s", cancer_type, gene, data_type)
     )
     
-    # Create results directory if it doesn't exist
-    dir.create("results", showWarnings = FALSE)
-    
-    # Save plots
-    plot_base <- file.path("results", sprintf("%s_%s_%s_survival", cancer_type, gene, data_type))
+    # Save plots with absolute paths
+    plot_base <- file.path(RESULTS_DIR, 
+                          sprintf("%s_%s_%s_survival", cancer_type, gene, data_type))
     ggsave(paste0(plot_base, ".pdf"), plot = plot$plot, width = 10, height = 8)
     ggsave(paste0(plot_base, ".png"), plot = plot$plot, width = 10, height = 8, dpi = 300)
     
@@ -524,7 +521,9 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
     )
     
     # Save results to RDS
-    saveRDS(results, file.path("results", sprintf("%s_results.rds", cancer_type)))
+    results_file <- file.path(RESULTS_DIR, sprintf("%s_results.rds", cancer_type))
+    saveRDS(results, results_file)
+    message(sprintf("Saved results to: %s", results_file))
     
     # Save summary to CSV
     summary_df <- data.frame(
@@ -536,7 +535,7 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
       low_group = sum(merged_data$group == "Low"),
       medium_group = sum(merged_data$group == "Medium")
     )
-    write.csv(summary_df, file.path("results", sprintf("%s_summary.csv", cancer_type)), row.names = FALSE)
+    write.csv(summary_df, file.path(RESULTS_DIR, sprintf("%s_summary.csv", cancer_type)), row.names = FALSE)
     
     return(results)
     
@@ -547,52 +546,70 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
 }
 
 #####################################################################
-# Main Analysis Execution
+# Main Execution
 #####################################################################
-# Initialize variables and results storage
-cancer_type <- NULL
-results_list <- list()  # Initialize results list at the top level
 
-array_task_id <- as.numeric(Sys.getenv("SLURM_ARRAY_TASK_ID", unset = "-1"))
-if (array_task_id >= 0) {
-  cancer_types <- c("BRCA", "LUAD", "COAD", "GBM", "KIRC", "PRAD")
-  if (array_task_id < length(cancer_types)) {
-    cancer_type <- cancer_types[array_task_id + 1]
-    message(sprintf("\nProcessing cancer type: %s", cancer_type))
+# Main analysis execution
+main <- function() {
+  # Initialize results list
+  results_list <- list()
+  
+  # Get cancer type from SLURM array task ID
+  array_task_id <- as.numeric(Sys.getenv("SLURM_ARRAY_TASK_ID", unset = "-1"))
+  message(sprintf("Starting main function with array task ID: %d", array_task_id))
+  
+  if (array_task_id >= 0) {
+    cancer_types <- c("ACC", "UVM", "SKCM", "LGG", "GBM")
+    if (array_task_id < length(cancer_types)) {
+      cancer_type <- cancer_types[array_task_id + 1]
+      message(sprintf("\nProcessing cancer type: %s", cancer_type))
+      
+      # Check if clinical data directory exists
+      clinical_dir <- file.path(work_dir, "../../TCGA_clinical")
+      message(sprintf("Looking for clinical data in: %s", clinical_dir))
+      if (!dir.exists(clinical_dir)) {
+        stop(sprintf("Clinical data directory not found: %s", clinical_dir))
+      }
+      
+      # Run each analysis type separately with its own error handling
+      
+      # 1. PSI Analysis for SRRM3
+      tryCatch({
+        message("\nRunning SRRM3 PSI analysis...")
+        results_list[["SRRM3_PSI"]] <- perform_survival_analysis(cancer_type, "PSI", "SRRM3")
+      }, error = function(e) {
+        message(sprintf("Error in SRRM3 PSI analysis: %s", e$message))
+      })
+      
+      # 2. Expression Analysis for SRRM3
+      tryCatch({
+        message("\nRunning SRRM3 expression analysis...")
+        results_list[["SRRM3_expression"]] <- perform_survival_analysis(cancer_type, "expression", "SRRM3")
+      }, error = function(e) {
+        message(sprintf("Error in SRRM3 expression analysis: %s", e$message))
+      })
+      
+      # 3. Expression Analysis for SRRM4
+      tryCatch({
+        message("\nRunning SRRM4 expression analysis...")
+        results_list[["SRRM4_expression"]] <- perform_survival_analysis(cancer_type, "expression", "SRRM4")
+      }, error = function(e) {
+        message(sprintf("Error in SRRM4 expression analysis: %s", e$message))
+      })
+      
+      # Save all results with absolute path
+      results_file <- file.path(RESULTS_DIR, sprintf("%s_results.rds", cancer_type))
+      saveRDS(results_list, results_file)
+      message(sprintf("Saved results to: %s", results_file))
+      
+      message(sprintf("\nCompleted all analyses for %s at %s", 
+                     cancer_type, 
+                     format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
+    }
   }
 }
 
-if (!is.null(cancer_type)) {
-  # Run each analysis type separately with its own error handling
-  
-  # 1. PSI Analysis for SRRM3
-  tryCatch({
-    message("\nRunning SRRM3 PSI analysis...")
-    results_list[["SRRM3_PSI"]] <- perform_survival_analysis(cancer_type, "PSI", "SRRM3")
-  }, error = function(e) {
-    message(sprintf("Error in SRRM3 PSI analysis: %s", e$message))
-  })
-  
-  # 2. Expression Analysis for SRRM3
-  tryCatch({
-    message("\nRunning SRRM3 expression analysis...")
-    results_list[["SRRM3_expression"]] <- perform_survival_analysis(cancer_type, "expression", "SRRM3")
-  }, error = function(e) {
-    message(sprintf("Error in SRRM3 expression analysis: %s", e$message))
-  })
-  
-  # 3. Expression Analysis for SRRM4
-  tryCatch({
-    message("\nRunning SRRM4 expression analysis...")
-    results_list[["SRRM4_expression"]] <- perform_survival_analysis(cancer_type, "expression", "SRRM4")
-  }, error = function(e) {
-    message(sprintf("Error in SRRM4 expression analysis: %s", e$message))
-  })
-  
-  # Save all results
-  saveRDS(results_list, file.path("results", sprintf("%s_results.rds", cancer_type)))
-  
-  message(sprintf("\nCompleted all analyses for %s at %s", 
-                 cancer_type, 
-                 format(Sys.time(), "%Y-%m-%d %H:%M:%S")))
+# Execute main function if script is run directly
+if (sys.nframe() == 0) {
+  main()
 }

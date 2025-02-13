@@ -1,2 +1,2 @@
-"cancer_type","total_samples","high_expr_samples","analyzed_samples","high_psi_group","low_psi_group","medium_psi_group","grouping_method"
-"SKCM",1037,118,1037,507,530,0,"two-level"
+"cancer_type","total_samples","high_expr_samples","analyzed_samples","expression_threshold_percentile","expression_threshold_value","overall_mean_expression","overall_median_expression","high_psi_group","low_psi_group","medium_psi_group","high_psi_group_mean_expr","low_psi_group_mean_expr","medium_psi_group_mean_expr","high_psi_group_median_expr","low_psi_group_median_expr","medium_psi_group_median_expr","grouping_method"
+"SKCM",1037,118,1037,0.75,57988,134214.174541948,111419,507,530,0,141892.465483235,126869.09245283,NA,132708,111325,NA,"two-level"

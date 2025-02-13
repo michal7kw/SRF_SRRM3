@@ -372,7 +372,14 @@ findValleys <- function(x) {
 perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 0.75,
                                           grouping_method = "quartile") {
   tryCatch({
-    high_expr_samples <- get_high_srrm3_samples(cancer_type, expression_threshold)
+    # Get expression data first to include in summary
+    expression_data <- get_expression_data(cancer_type, "SRRM3")
+    expression_cutoff <- quantile(expression_data$expression, probs = expression_threshold, na.rm = TRUE)
+    message(sprintf("Expression cutoff (%.2f percentile): %.2f", expression_threshold * 100, expression_cutoff))
+    
+    high_expr_samples <- expression_data %>%
+      filter(expression >= expression_cutoff) %>%
+      pull(case_id)
     
     message("Number of high expression samples: ", length(high_expr_samples))
     message("First few sample IDs: ", paste(head(high_expr_samples), collapse=", "))
@@ -387,17 +394,16 @@ perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 
     psi_data <- get_psi_data(cancer_type, "SRRM3", high_expr_samples)
     message("Number of PSI samples: ", nrow(psi_data))
     
-    # Merge data
-    merged_data <- inner_join(
-      clinical_data %>% mutate(merge_id = substr(case_id, 1, 12)),
-      psi_data %>% mutate(merge_id = substr(case_id, 1, 12)),
-      by = "merge_id"
-    )
+    # Merge all data (clinical, PSI, and expression)
+    merged_data <- clinical_data %>% 
+      mutate(merge_id = substr(case_id, 1, 12)) %>%
+      inner_join(psi_data %>% mutate(merge_id = substr(case_id, 1, 12)), by = "merge_id") %>%
+      inner_join(expression_data %>% mutate(merge_id = substr(case_id, 1, 12)), by = "merge_id")
     
     message("Number of samples after merging: ", nrow(merged_data))
     
     if (nrow(merged_data) == 0) {
-      stop("No samples after merging clinical and PSI data")
+      stop("No samples after merging clinical and molecular data")
     }
     
     # Determine optimal grouping based on PSI distribution
@@ -428,6 +434,20 @@ perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 
     message("Sample sizes per group:")
     print(table(merged_data$group))
     
+    # Calculate expression statistics per group
+    expr_stats <- merged_data %>%
+      group_by(group) %>%
+      summarize(
+        mean_expression = mean(expression, na.rm = TRUE),
+        median_expression = median(expression, na.rm = TRUE),
+        min_expression = min(expression, na.rm = TRUE),
+        max_expression = max(expression, na.rm = TRUE),
+        .groups = "drop"
+      )
+    
+    message("\n=== Expression Statistics by Group ===")
+    print(expr_stats)
+    
     # Survival analysis
     fit <- survfit(Surv(time = overall_survival, event = deceased) ~ group,
                   data = merged_data)
@@ -454,15 +474,29 @@ perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 
     ggsave(paste0(plot_base, ".pdf"), plot = plot$plot, width = 10, height = 8)
     ggsave(paste0(plot_base, ".png"), plot = plot$plot, width = 10, height = 8, dpi = 300)
     
-    # Create summary
+    # Create enhanced summary with expression data
     summary_df <- data.frame(
       cancer_type = cancer_type,
       total_samples = nrow(merged_data),
       high_expr_samples = length(high_expr_samples),
       analyzed_samples = nrow(merged_data),
+      expression_threshold_percentile = expression_threshold,
+      expression_threshold_value = expression_cutoff,
+      overall_mean_expression = mean(merged_data$expression, na.rm = TRUE),
+      overall_median_expression = median(merged_data$expression, na.rm = TRUE),
       high_psi_group = sum(merged_data$group == "High"),
       low_psi_group = sum(merged_data$group == "Low"),
       medium_psi_group = sum(merged_data$group == "Medium"),
+      high_psi_group_mean_expr = expr_stats$mean_expression[expr_stats$group == "High"],
+      low_psi_group_mean_expr = expr_stats$mean_expression[expr_stats$group == "Low"],
+      medium_psi_group_mean_expr = if("Medium" %in% expr_stats$group) 
+                                    expr_stats$mean_expression[expr_stats$group == "Medium"] 
+                                  else NA,
+      high_psi_group_median_expr = expr_stats$median_expression[expr_stats$group == "High"],
+      low_psi_group_median_expr = expr_stats$median_expression[expr_stats$group == "Low"],
+      medium_psi_group_median_expr = if("Medium" %in% expr_stats$group) 
+                                     expr_stats$median_expression[expr_stats$group == "Medium"] 
+                                   else NA,
       grouping_method = if(use_two_groups) "two-level" else "three-level"
     )
     
@@ -473,12 +507,17 @@ perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 
     saveRDS(list(fit = fit, 
                  data = merged_data, 
                  summary = summary_df,
+                 expression_stats = expr_stats,
                  grouping = list(
                    method = if(use_two_groups) "two-level" else "three-level",
                    cutpoints = if(use_two_groups) 
                      list(median = median_val) 
                    else 
-                     list(q1 = quartiles[1], q3 = quartiles[2])
+                     list(q1 = quartiles[1], q3 = quartiles[2]),
+                   expression_threshold = list(
+                     percentile = expression_threshold,
+                     value = expression_cutoff
+                   )
                  )),
             file.path(results_dir, sprintf("%s_results.rds", cancer_type)))
     

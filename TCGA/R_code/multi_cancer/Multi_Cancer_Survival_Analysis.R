@@ -173,11 +173,10 @@ get_expression_data <- function(cancer_type, gene_name) {
     return(readRDS(cache_file))
   }
   
-  message("Getting expression data from recount3...")
+  message(sprintf("Getting expression data for %s from recount3...", gene_name))
   projects <- available_projects()
   
   # Find specific project in recount3
-
   project_info <- subset(projects, 
                         project == toupper(cancer_type) &
                         file_source == "tcga" &
@@ -194,25 +193,44 @@ get_expression_data <- function(cancer_type, gene_name) {
     annotation = "gencode_v26"
   )
   
+  # Debug information
+  message("Available gene names (first 10):")
+  print(head(rowData(rse_gene)$gene_name, 10))
+  
   # Extract expression for specific gene
-  gene_idx <- which(rowData(rse_gene)$gene_name == gene_name)[1]
-  if (is.na(gene_idx)) {
-    stop(sprintf("Gene %s not found in dataset", gene_name))
+  gene_idx <- which(rowData(rse_gene)$gene_name == gene_name)
+  if (length(gene_idx) == 0) {
+    # Try case-insensitive search
+    gene_idx <- which(toupper(rowData(rse_gene)$gene_name) == toupper(gene_name))
   }
+  
+  if (length(gene_idx) == 0) {
+    stop(sprintf("Gene %s not found in dataset. Available genes matching pattern: %s", 
+                gene_name,
+                paste(grep(toupper(gene_name), 
+                         toupper(rowData(rse_gene)$gene_name), 
+                         value=TRUE), 
+                     collapse=", ")))
+  }
+  
+  message(sprintf("Found %s at index: %d", gene_name, gene_idx[1]))
   
   # Create data frame with expression values
   expression_data <- data.frame(
     case_id = substr(colData(rse_gene)$tcga.tcga_barcode, 1, 12),
-    expression = assays(rse_gene)$counts[gene_idx, ]
+    expression = assay(rse_gene, "raw_counts")[gene_idx[1], ]
   )
   
   # Handle duplicate samples by averaging
   if (any(duplicated(expression_data$case_id))) {
+    message("Found duplicated case IDs, aggregating...")
     expression_data <- expression_data %>%
       group_by(case_id) %>%
       summarize(expression = mean(expression, na.rm = TRUE)) %>%
       ungroup()
   }
+  
+  message(sprintf("Final expression data has %d samples", nrow(expression_data)))
   
   saveRDS(expression_data, cache_file)
   return(expression_data)
@@ -453,23 +471,24 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
     message("\n=== Grouping Samples ===")
     value_col <- if(data_type == "PSI") "psi" else "expression"
     
-    # Perform grouping based on specified method
-    if (grouping_method == "quartile") {
+    # Determine optimal grouping based on data distribution
+    use_two_groups <- determine_optimal_grouping(merged_data[[value_col]])
+    
+    if (use_two_groups) {
+      # Use median split for two groups
+      median_val <- median(merged_data[[value_col]], na.rm = TRUE)
+      message(sprintf("Using two-group split at median %.2f", median_val))
+      merged_data$group <- if_else(merged_data[[value_col]] > median_val, "High", "Low")
+    } else {
+      # Use quartiles for three groups
       quartiles <- quantile(merged_data[[value_col]], probs = c(0.25, 0.75), na.rm = TRUE)
-      message(sprintf("Quartiles: Q1=%.2f, Q3=%.2f", quartiles[1], quartiles[2]))
-      
-      if (quartiles[1] != quartiles[2]) {  # Check if quartiles are different
-        merged_data$group <- case_when(
-          merged_data[[value_col]] <= quartiles[1] ~ "Low",
-          merged_data[[value_col]] >= quartiles[2] ~ "High",
-          TRUE ~ "Medium"
-        )
-      } else {
-        # If quartiles are the same, use median split
-        median_val <- median(merged_data[[value_col]], na.rm = TRUE)
-        message(sprintf("Using median split at %.2f", median_val))
-        merged_data$group <- if_else(merged_data[[value_col]] > median_val, "High", "Low")
-      }
+      message(sprintf("Using three-group split at quartiles: Q1=%.2f, Q3=%.2f", 
+                     quartiles[1], quartiles[2]))
+      merged_data$group <- case_when(
+        merged_data[[value_col]] <= quartiles[1] ~ "Low",
+        merged_data[[value_col]] >= quartiles[2] ~ "High",
+        TRUE ~ "Medium"
+      )
     }
     
     # Remove any NA groups
@@ -484,6 +503,11 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
     message("Sample sizes per group:")
     print(table(merged_data$group))
     
+    # Create plot with appropriate title
+    plot_title <- sprintf("%s survival by %s %s\n(%s grouping)", 
+                         cancer_type, gene, data_type,
+                         if(use_two_groups) "two-level" else "three-level")
+    
     # Fit survival model
     fit <- survfit(Surv(time = overall_survival, 
                        event = deceased) ~ group, 
@@ -496,7 +520,7 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
       pval = TRUE,
       risk.table = TRUE,
       tables.height = 0.3,
-      title = sprintf("%s survival by %s %s", cancer_type, gene, data_type)
+      title = plot_title
     )
     
     # Save plots with absolute paths
@@ -543,6 +567,53 @@ perform_survival_analysis <- function(cancer_type, data_type = "PSI", gene = "SR
     message(sprintf("Error in %s %s analysis: %s", gene, data_type, e$message))
     return(NULL)
   })
+}
+
+determine_optimal_grouping <- function(values) {
+  # Calculate distribution characteristics
+  q1 <- quantile(values, 0.25)
+  q2 <- quantile(values, 0.5)
+  q3 <- quantile(values, 0.75)
+  iqr <- q3 - q1
+  
+  # Calculate density
+  d <- density(values)
+  peaks <- findPeaks(d$y)
+  valleys <- findValleys(d$y)
+  
+  # Criteria for using two groups:
+  # 1. Clear bimodality (2 peaks with significant valley)
+  # 2. Large gaps in distribution
+  # 3. Small middle group
+  
+  middle_group_size <- sum(values > q1 & values < q3)
+  total_size <- length(values)
+  middle_group_proportion <- middle_group_size / total_size
+  
+  use_two_groups <- length(peaks) >= 2 || 
+                    middle_group_proportion < 0.3 ||
+                    (q3 - q1) > 2 * mad(values)
+  
+  message(sprintf("\n=== Group Distribution Analysis ==="))
+  message(sprintf("Number of density peaks: %d", length(peaks)))
+  message(sprintf("Middle group proportion: %.2f", middle_group_proportion))
+  message(sprintf("IQR/MAD ratio: %.2f", (q3 - q1) / mad(values)))
+  message(sprintf("Selected grouping: %s", if(use_two_groups) "two groups" else "three groups"))
+  
+  return(use_two_groups)
+}
+
+# Helper functions for peak detection
+findPeaks <- function(x) {
+  # Find local maxima
+  peaks <- which(diff(sign(diff(c(-Inf, x, -Inf)))) == -2)
+  return(peaks)
+}
+
+findValleys <- function(x) {
+  # Find local minima
+  valleys <- which(diff(sign(diff(c(Inf, x, Inf)))) == 2)
+  return(valleys)
 }
 
 #####################################################################
@@ -606,33 +677,42 @@ main <- function() {
       tryCatch({
         message("\n=== Running SRRM3 PSI Analysis ===")
         results_list[["SRRM3_PSI"]] <- perform_survival_analysis(cancer_type, "PSI", "SRRM3")
-        message("SRRM3 PSI analysis completed successfully")
+        if (!is.null(results_list[["SRRM3_PSI"]])) {
+          message("SRRM3 PSI analysis completed successfully")
+        }
       }, error = function(e) {
         message(sprintf("Error in SRRM3 PSI analysis: %s", e$message))
+        results_list[["SRRM3_PSI"]] <- NULL
       })
       
       # 2. Expression Analysis for SRRM3
       tryCatch({
         message("\n=== Running SRRM3 Expression Analysis ===")
         results_list[["SRRM3_expression"]] <- perform_survival_analysis(cancer_type, "expression", "SRRM3")
-        message("SRRM3 expression analysis completed successfully")
+        if (!is.null(results_list[["SRRM3_expression"]])) {
+          message("SRRM3 expression analysis completed successfully")
+        }
       }, error = function(e) {
         message(sprintf("Error in SRRM3 expression analysis: %s", e$message))
+        results_list[["SRRM3_expression"]] <- NULL
       })
       
       # 3. Expression Analysis for SRRM4
       tryCatch({
         message("\n=== Running SRRM4 Expression Analysis ===")
         results_list[["SRRM4_expression"]] <- perform_survival_analysis(cancer_type, "expression", "SRRM4")
-        message("SRRM4 expression analysis completed successfully")
+        if (!is.null(results_list[["SRRM4_expression"]])) {
+          message("SRRM4 expression analysis completed successfully")
+        }
       }, error = function(e) {
         message(sprintf("Error in SRRM4 expression analysis: %s", e$message))
+        results_list[["SRRM4_expression"]] <- NULL
       })
       
       # Save all results
       message("\n=== Saving Results ===")
       results_file <- file.path(RESULTS_DIR, sprintf("%s_results.rds", cancer_type))
-      if (length(results_list) > 0) {
+      if (length(results_list) > 0 && any(!sapply(results_list, is.null))) {
         saveRDS(results_list, results_file)
         message(sprintf("Saved results to: %s", results_file))
         
@@ -642,10 +722,12 @@ main <- function() {
           if (!is.null(results_list[[analysis_name]])) {
             message(sprintf("\n%s:", analysis_name))
             print(results_list[[analysis_name]]$summary$group_sizes)
+          } else {
+            message(sprintf("\n%s: Failed", analysis_name))
           }
         }
       } else {
-        message("No results to save")
+        message("No successful results to save")
       }
       
       message(sprintf("\n=== Analysis Complete ==="))

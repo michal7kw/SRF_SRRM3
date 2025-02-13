@@ -322,6 +322,53 @@ get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
 #####################################################################
 # High SRRM3 PSI Analysis
 #####################################################################
+determine_optimal_grouping <- function(values) {
+  # Calculate distribution characteristics
+  q1 <- quantile(values, 0.25)
+  q2 <- quantile(values, 0.5)
+  q3 <- quantile(values, 0.75)
+  iqr <- q3 - q1
+  
+  # Calculate density
+  d <- density(values)
+  peaks <- findPeaks(d$y)
+  valleys <- findValleys(d$y)
+  
+  # Criteria for using two groups:
+  # 1. Clear bimodality (2 peaks with significant valley)
+  # 2. Large gaps in distribution
+  # 3. Small middle group
+  
+  middle_group_size <- sum(values > q1 & values < q3)
+  total_size <- length(values)
+  middle_group_proportion <- middle_group_size / total_size
+  
+  use_two_groups <- length(peaks) >= 2 || 
+                    middle_group_proportion < 0.3 ||
+                    (q3 - q1) > 2 * mad(values)
+  
+  message(sprintf("\n=== Group Distribution Analysis ==="))
+  message(sprintf("Number of density peaks: %d", length(peaks)))
+  message(sprintf("Middle group proportion: %.2f", middle_group_proportion))
+  message(sprintf("IQR/MAD ratio: %.2f", (q3 - q1) / mad(values)))
+  message(sprintf("Selected grouping: %s", if(use_two_groups) "two groups" else "three groups"))
+  
+  return(use_two_groups)
+}
+
+# Helper functions for peak detection
+findPeaks <- function(x) {
+  # Find local maxima
+  peaks <- which(diff(sign(diff(c(-Inf, x, -Inf)))) == -2)
+  return(peaks)
+}
+
+findValleys <- function(x) {
+  # Find local minima
+  valleys <- which(diff(sign(diff(c(Inf, x, Inf)))) == 2)
+  return(valleys)
+}
+
 perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 0.75,
                                           grouping_method = "quartile") {
   tryCatch({
@@ -353,17 +400,31 @@ perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 
       stop("No samples after merging clinical and PSI data")
     }
     
-    # Group samples
-    quartiles <- quantile(merged_data$psi, probs = c(0.25, 0.75), na.rm = TRUE)
-    merged_data$group <- case_when(
-      merged_data$psi <= quartiles[1] ~ "Low",
-      merged_data$psi >= quartiles[2] ~ "High",
-      TRUE ~ "Medium"
-    )
+    # Determine optimal grouping based on PSI distribution
+    message("\n=== Grouping Samples ===")
+    use_two_groups <- determine_optimal_grouping(merged_data$psi)
+    
+    if (use_two_groups) {
+      # Use median split for two groups
+      median_val <- median(merged_data$psi, na.rm = TRUE)
+      message(sprintf("Using two-group split at median %.2f", median_val))
+      merged_data$group <- if_else(merged_data$psi > median_val, "High", "Low")
+    } else {
+      # Use quartiles for three groups
+      quartiles <- quantile(merged_data$psi, probs = c(0.25, 0.75), na.rm = TRUE)
+      message(sprintf("Using three-group split at quartiles: Q1=%.2f, Q3=%.2f", 
+                     quartiles[1], quartiles[2]))
+      merged_data$group <- case_when(
+        merged_data$psi <= quartiles[1] ~ "Low",
+        merged_data$psi >= quartiles[2] ~ "High",
+        TRUE ~ "Medium"
+      )
+    }
     
     merged_data <- merged_data %>% 
       filter(!is.na(group))
     
+    message("\n=== Sample Distribution ===")
     message("Sample sizes per group:")
     print(table(merged_data$group))
     
@@ -371,13 +432,18 @@ perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 
     fit <- survfit(Surv(time = overall_survival, event = deceased) ~ group,
                   data = merged_data)
     
+    # Create plot with appropriate title
+    plot_title <- sprintf("%s survival by PSI (High SRRM3 samples)\n(%s grouping)", 
+                         cancer_type,
+                         if(use_two_groups) "two-level" else "three-level")
+    
     # Create plot
     plot <- ggsurvplot(
       fit, data = merged_data,
       pval = TRUE,
       risk.table = TRUE,
       tables.height = 0.3,
-      title = sprintf("%s survival by PSI (High SRRM3 samples)", cancer_type)
+      title = plot_title
     )
     
     # Save results
@@ -396,14 +462,24 @@ perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 
       analyzed_samples = nrow(merged_data),
       high_psi_group = sum(merged_data$group == "High"),
       low_psi_group = sum(merged_data$group == "Low"),
-      medium_psi_group = sum(merged_data$group == "Medium")
+      medium_psi_group = sum(merged_data$group == "Medium"),
+      grouping_method = if(use_two_groups) "two-level" else "three-level"
     )
     
     write.csv(summary_df, 
               file.path(results_dir, sprintf("%s_summary.csv", cancer_type)), 
               row.names = FALSE)
     
-    saveRDS(list(fit = fit, data = merged_data, summary = summary_df),
+    saveRDS(list(fit = fit, 
+                 data = merged_data, 
+                 summary = summary_df,
+                 grouping = list(
+                   method = if(use_two_groups) "two-level" else "three-level",
+                   cutpoints = if(use_two_groups) 
+                     list(median = median_val) 
+                   else 
+                     list(q1 = quartiles[1], q3 = quartiles[2])
+                 )),
             file.path(results_dir, sprintf("%s_results.rds", cancer_type)))
     
     return(list(fit = fit, data = merged_data, summary = summary_df))

@@ -1,0 +1,2 @@
+"cancer_type","total_samples","male_samples","female_samples","expression_threshold","expression_threshold_percentile","grouping_method"
+"SKCM",1037,647,390,57988,0.75,"two-level"

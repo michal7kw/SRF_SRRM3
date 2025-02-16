@@ -1,0 +1,2 @@
+"cancer_type","gender","total_samples","high_expr_samples","high_psi_group","low_psi_group","medium_psi_group","median_survival","events","grouping_method"
+"ACC","MALE",39,39,22,17,0,1858,16,"two-level"

@@ -1,0 +1,2 @@
+"cancer_type","total_samples","g2_samples","g3_samples","male_g2","male_g3","female_g2","female_g3","expression_threshold","expression_threshold_percentile","grouping_method"
+"LGG",699,332,367,159,193,173,174,231544,0.75,"two-level"

@@ -1,0 +1,2 @@
+"cancer_type","gender","total_samples","high_expr_samples","high_psi_group","low_psi_group","medium_psi_group","median_survival","events","grouping_method"
+"SKCM","FEMALE",390,390,207,183,0,1910,195,"two-level"

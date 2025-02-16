@@ -1,10 +1,3 @@
-#####################################################################
-# High SRRM3 PSI Analysis Script
-#####################################################################
-# This script performs PSI analysis specifically for samples with high
-# SRRM3 expression. It reuses functions from Multi_Cancer_Survival_Analysis.R
-# and adds specific functionality for high SRRM3 expression analysis.
-
 # Load required libraries
 suppressPackageStartupMessages({
   library(dplyr)
@@ -79,40 +72,32 @@ get_clinical_data <- function(cancer_type) {
     dplyr::transmute(
       case_id = case_submitter_id,
       vital_status = vital_status,
-      # Add input validation
-      days_to_death = as.numeric(days_to_death),
-      days_to_follow_up = as.numeric(days_to_follow_up),
-      # Calculate survival time
+      gender = gender,  # Include gender information
+      # Calculate survival time using either death or last follow-up
       overall_survival = case_when(
-        !is.na(days_to_death) ~ days_to_death,
-        !is.na(days_to_follow_up) ~ days_to_follow_up,
+        !is.na(days_to_death) ~ as.numeric(days_to_death),
+        !is.na(days_to_follow_up) ~ as.numeric(days_to_follow_up),
         TRUE ~ NA_real_
       ),
-      # Calculate deceased status
+      # Standardize vital status to boolean
       deceased = case_when(
         tolower(vital_status) == "dead" ~ TRUE,
         tolower(vital_status) == "alive" ~ FALSE,
         TRUE ~ NA
       )
     ) %>%
-    # Add validation
-    filter(!is.na(overall_survival), 
-           !is.na(deceased),
-           overall_survival > 0) %>%
-    # Add quality checks
-    mutate(
-      overall_survival = if_else(
-        overall_survival > 365 * 50,  # Flag unrealistic survival times
-        NA_real_,
-        overall_survival
-      )
-    )
+    dplyr::filter(!is.na(overall_survival), !is.na(deceased)) %>%
+    # Filter for only male and female patients
+    dplyr::filter(tolower(gender) %in% c("male", "female"))
   
-  # Add data quality reporting
-  n_original <- nrow(clinical)
-  n_clean <- nrow(clinical_clean)
-  message(sprintf("Processed %d/%d samples (%.1f%% retained)",
-                 n_clean, n_original, 100 * n_clean/n_original))
+  # Print summary statistics
+  message(sprintf("Processed clinical data summary:"))
+  message(sprintf("- Total patients: %d", nrow(clinical_clean)))
+  message(sprintf("- Male patients: %d", sum(tolower(clinical_clean$gender) == "male")))
+  message(sprintf("- Female patients: %d", sum(tolower(clinical_clean$gender) == "female")))
+  message(sprintf("- Patients with death events: %d", sum(clinical_clean$deceased)))
+  message(sprintf("- Median survival time: %.1f days", 
+                 median(clinical_clean$overall_survival)))
   
   return(clinical_clean)
 }
@@ -193,45 +178,6 @@ get_expression_data <- function(cancer_type, gene_name) {
   
   saveRDS(expression_data, cache_file)
   return(expression_data)
-}
-
-#####################################################################
-# High SRRM3 Sample Selection
-#####################################################################
-# Function to get high SRRM3 expression samples
-get_high_srrm3_samples <- function(cancer_type, threshold = 0.75) {
-  message(sprintf("Getting high SRRM3 expression samples for %s", cancer_type))
-  
-  expression_data <- get_expression_data(cancer_type, "SRRM3")
-  
-  if (nrow(expression_data) == 0) {
-    stop("No expression data available")
-  }
-  
-  # Ensure expression values are numeric
-  expression_data$expression <- as.numeric(as.character(expression_data$expression))
-  
-  # Remove any NA or infinite values
-  expression_data <- expression_data %>%
-    filter(!is.na(expression), is.finite(expression))
-  
-  if (nrow(expression_data) == 0) {
-    stop("No valid expression values after cleaning")
-  }
-  
-  # Calculate cutoff and get high expression samples
-  cutoff <- quantile(expression_data$expression, probs = threshold, na.rm = TRUE)
-  message(sprintf("Expression cutoff: %.2f", cutoff))
-  
-  high_expr_samples <- expression_data %>%
-    filter(!is.na(expression), is.finite(expression)) %>%
-    filter(expression >= cutoff) %>%
-    pull(case_id)
-  
-  message(sprintf("Found %d samples with high SRRM3 expression (>%.2f percentile)",
-                 length(high_expr_samples), threshold * 100))
-  
-  return(high_expr_samples)
 }
 
 #####################################################################
@@ -333,7 +279,7 @@ get_psi_data <- function(cancer_type, gene_name, sample_ids = NULL) {
 }
 
 #####################################################################
-# High SRRM3 PSI Analysis
+# Helper Functions for Distribution Analysis
 #####################################################################
 determine_optimal_grouping <- function(values) {
   # Calculate distribution characteristics
@@ -382,8 +328,11 @@ findValleys <- function(x) {
   return(valleys)
 }
 
-perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 0.75,
-                                          grouping_method = "quartile") {
+#####################################################################
+# High SRRM3 PSI Analysis with Gender Stratification
+#####################################################################
+perform_high_srrm3_psi_analysis_by_gender <- function(cancer_type, expression_threshold = 0.75,
+                                                     grouping_method = "quartile") {
   tryCatch({
     # Get expression data first to include in summary
     expression_data <- get_expression_data(cancer_type, "SRRM3")
@@ -395,7 +344,6 @@ perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 
       pull(case_id)
     
     message("Number of high expression samples: ", length(high_expr_samples))
-    message("First few sample IDs: ", paste(head(high_expr_samples), collapse=", "))
     
     if (length(high_expr_samples) < 10) {
       stop("Insufficient samples with high SRRM3 expression")
@@ -443,98 +391,114 @@ perform_high_srrm3_psi_analysis <- function(cancer_type, expression_threshold = 
     merged_data <- merged_data %>% 
       filter(!is.na(group))
     
-    message("\n=== Sample Distribution ===")
-    message("Sample sizes per group:")
-    print(table(merged_data$group))
-    
-    # Calculate expression statistics per group
-    expr_stats <- merged_data %>%
-      group_by(group) %>%
-      summarize(
-        mean_expression = mean(expression, na.rm = TRUE),
-        median_expression = median(expression, na.rm = TRUE),
-        min_expression = min(expression, na.rm = TRUE),
-        max_expression = max(expression, na.rm = TRUE),
-        .groups = "drop"
-      )
-    
-    message("\n=== Expression Statistics by Group ===")
-    print(expr_stats)
-    
-    # Survival analysis
-    fit <- survfit(Surv(time = overall_survival, event = deceased) ~ group,
-                  data = merged_data)
-    
-    # Create plot with appropriate title
-    plot_title <- sprintf("%s survival by PSI (High SRRM3 samples)\n(%s grouping)", 
-                         cancer_type,
-                         if(use_two_groups) "two-level" else "three-level")
-    
-    # Create plot
-    plot <- ggsurvplot(
-      fit, data = merged_data,
-      pval = TRUE,
-      risk.table = TRUE,
-      tables.height = 0.3,
-      title = plot_title
-    )
-    
-    # Save results
-    results_dir <- file.path("results", "high_srrm3_analysis")
+    # Create results directory
+    results_dir <- file.path("results", "high_srrm3_analysis_by_gender")
     dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
     
-    plot_base <- file.path(results_dir, sprintf("%s_high_srrm3_psi_survival", cancer_type))
-    ggsave(paste0(plot_base, ".pdf"), plot = plot$plot, width = 10, height = 8)
-    ggsave(paste0(plot_base, ".png"), plot = plot$plot, width = 10, height = 8, dpi = 300)
+    # # Perform analysis for all patients
+    # message("\n=== Overall Analysis ===")
+    # fit_all <- survfit(Surv(time = overall_survival, event = deceased) ~ group,
+    #                   data = merged_data)
     
-    # Create enhanced summary with expression data
-    summary_df <- data.frame(
+    # # Calculate patient counts for all patients
+    # all_counts <- merged_data %>%
+    #   group_by(group) %>%
+    #   summarize(n = n(), .groups = "drop") %>%
+    #   mutate(label = sprintf("%s (n=%d)", group, n)) %>%
+    #   pull(label) %>%
+    #   paste(collapse = ", ")
+    
+    # plot_all <- ggsurvplot(
+    #   fit_all, data = merged_data,
+    #   pval = TRUE,
+    #   risk.table = TRUE,
+    #   tables.height = 0.3,
+    #   title = sprintf("%s survival by PSI (All patients)\n%s", cancer_type, all_counts)
+    # )
+    
+    # # Save overall results
+    # plot_base_all <- file.path(results_dir, sprintf("%s_all_patients_survival", cancer_type))
+    # ggsave(paste0(plot_base_all, ".pdf"), plot = plot_all$plot, width = 10, height = 8)
+    # ggsave(paste0(plot_base_all, ".png"), plot = plot_all$plot, width = 10, height = 8, dpi = 300)
+    
+    # Perform analysis by gender
+    for (gender in c("male", "female")) {
+      message(sprintf("\n=== Analysis for %s patients ===", toupper(gender)))
+      
+      gender_data <- merged_data %>%
+        filter(tolower(gender) == !!gender)
+      
+      if (nrow(gender_data) < 10) {
+        message(sprintf("Insufficient samples for %s patients", gender))
+        next
+      }
+      
+      # Calculate patient counts for gender-specific analysis
+      gender_counts <- gender_data %>%
+        group_by(group) %>%
+        summarize(n = n(), .groups = "drop") %>%
+        mutate(label = sprintf("%s (n=%d)", group, n)) %>%
+        pull(label) %>%
+        paste(collapse = ", ")
+      
+      fit_gender <- survfit(Surv(time = overall_survival, event = deceased) ~ group,
+                          data = gender_data)
+      
+      plot_gender <- ggsurvplot(
+        fit_gender, data = gender_data,
+        pval = TRUE,
+        risk.table = TRUE,
+        tables.height = 0.3,
+        title = sprintf("%s survival by PSI (%s patients)\n%s", 
+                       cancer_type, toupper(gender), gender_counts)
+      )
+      
+      # Save gender-specific results
+      plot_base_gender <- file.path(results_dir, 
+                                  sprintf("%s_%s_survival", cancer_type, gender))
+      ggsave(paste0(plot_base_gender, ".pdf"), plot = plot_gender$plot, width = 10, height = 8)
+      ggsave(paste0(plot_base_gender, ".png"), plot = plot_gender$plot, width = 10, height = 8, dpi = 300)
+      
+      # Create gender-specific summary
+      summary_gender <- data.frame(
+        cancer_type = cancer_type,
+        gender = toupper(gender),
+        total_samples = nrow(gender_data),
+        high_expr_samples = sum(gender_data$expression >= expression_cutoff),
+        high_psi_group = sum(gender_data$group == "High"),
+        low_psi_group = sum(gender_data$group == "Low"),
+        medium_psi_group = sum(gender_data$group == "Medium"),
+        median_survival = median(gender_data$overall_survival),
+        events = sum(gender_data$deceased),
+        grouping_method = if(use_two_groups) "two-level" else "three-level"
+      )
+      
+      write.csv(summary_gender,
+                file.path(results_dir, sprintf("%s_%s_summary.csv", cancer_type, gender)),
+                row.names = FALSE)
+    }
+    
+    # Create combined summary
+    summary_combined <- data.frame(
       cancer_type = cancer_type,
       total_samples = nrow(merged_data),
-      high_expr_samples = length(high_expr_samples),
-      analyzed_samples = nrow(merged_data),
+      male_samples = sum(tolower(merged_data$gender) == "male"),
+      female_samples = sum(tolower(merged_data$gender) == "female"),
+      expression_threshold = expression_cutoff,
       expression_threshold_percentile = expression_threshold,
-      expression_threshold_value = expression_cutoff,
-      overall_mean_expression = mean(merged_data$expression, na.rm = TRUE),
-      overall_median_expression = median(merged_data$expression, na.rm = TRUE),
-      high_psi_group = sum(merged_data$group == "High"),
-      low_psi_group = sum(merged_data$group == "Low"),
-      medium_psi_group = sum(merged_data$group == "Medium"),
-      high_psi_group_mean_expr = expr_stats$mean_expression[expr_stats$group == "High"],
-      low_psi_group_mean_expr = expr_stats$mean_expression[expr_stats$group == "Low"],
-      medium_psi_group_mean_expr = if("Medium" %in% expr_stats$group) 
-                                    expr_stats$mean_expression[expr_stats$group == "Medium"] 
-                                  else NA,
-      high_psi_group_median_expr = expr_stats$median_expression[expr_stats$group == "High"],
-      low_psi_group_median_expr = expr_stats$median_expression[expr_stats$group == "Low"],
-      medium_psi_group_median_expr = if("Medium" %in% expr_stats$group) 
-                                     expr_stats$median_expression[expr_stats$group == "Medium"] 
-                                   else NA,
       grouping_method = if(use_two_groups) "two-level" else "three-level"
     )
     
-    write.csv(summary_df, 
-              file.path(results_dir, sprintf("%s_summary.csv", cancer_type)), 
+    write.csv(summary_combined,
+              file.path(results_dir, sprintf("%s_combined_summary.csv", cancer_type)),
               row.names = FALSE)
     
-    saveRDS(list(fit = fit, 
-                 data = merged_data, 
-                 summary = summary_df,
-                 expression_stats = expr_stats,
-                 grouping = list(
-                   method = if(use_two_groups) "two-level" else "three-level",
-                   cutpoints = if(use_two_groups) 
-                     list(median = median_val) 
-                   else 
-                     list(q1 = quartiles[1], q3 = quartiles[2]),
-                   expression_threshold = list(
-                     percentile = expression_threshold,
-                     value = expression_cutoff
-                   )
-                 )),
-            file.path(results_dir, sprintf("%s_results.rds", cancer_type)))
-    
-    return(list(fit = fit, data = merged_data, summary = summary_df))
+    return(list(
+      all_patients = fit_all,
+      male_patients = if(exists("fit_male")) fit_male else NULL,
+      female_patients = if(exists("fit_female")) fit_female else NULL,
+      data = merged_data
+    ))
     
   }, error = function(e) {
     message(sprintf("Error in high SRRM3 PSI analysis for %s: %s", cancer_type, e$message))
@@ -552,7 +516,7 @@ main <- function() {
         stop("CANCER_TYPE environment variable not set")
     }
     
-    message(sprintf("\nAnalyzing %s", cancer_type))
+    message(sprintf("\nAnalyzing %s with gender stratification", cancer_type))
     
     # Remove any corrupted cache files
     cache_files <- list.files("cache", pattern = paste0(cancer_type, ".*\\.rds$"), full.names = TRUE)
@@ -565,7 +529,7 @@ main <- function() {
         })
     }
     
-    results <- perform_high_srrm3_psi_analysis(cancer_type, expression_threshold = 0.75)
+    results <- perform_high_srrm3_psi_analysis_by_gender(cancer_type, expression_threshold = 0.75)
     
     if (is.null(results)) {
         message("No results generated")

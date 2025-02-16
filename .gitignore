@@ -39,3 +39,4 @@ cache/
 **/log/
 GTEx_vs_TCGA/.Rhistory
 TCGA/GDCdata/
+TCGA/R_code/multi_cancer_PSI_high_expression/alterative_survival_analysis
